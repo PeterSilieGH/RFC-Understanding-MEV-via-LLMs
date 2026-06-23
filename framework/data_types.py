@@ -1,5 +1,7 @@
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List, Dict, Any, Optional
+
+
 
 @dataclass
 class TraceEvent:
@@ -11,10 +13,18 @@ class TraceEvent:
     call_type: str #EVM opcode used to make the call (e.g., CALL, DELEGATECALL, etc.)
     
 class CallNode:
-    """Represents a node in the call tree of a smart contract execution."""
-    def __init__(self, trace: TraceEvent):
-        self.event = trace
-        self.children: List['CallNode'] = []
-    
-    def __repr__(self):
-        return f"CallNode({self.trace.method} : {self.trace.from_addr[:6]} -> {self.trace.to_addr[:6]})"
+    def __init__(self, trace_dict):
+        self.from_addr = trace_dict['from']
+        self.to_addr = trace_dict['to']
+        self.method = trace_dict['method']
+        self.call_type = trace_dict['type']
+        self.children = []
+
+    def to_dict(self):
+        return {
+            "from": self.from_addr,
+            "to": self.to_addr,
+            "method": self.method,
+            "type": self.call_type,
+            "children": [c.to_dict() for c in self.children]
+        }
