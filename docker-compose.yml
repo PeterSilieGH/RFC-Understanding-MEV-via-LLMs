@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-mev_inspect}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - mev_inspect_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Not a long-running service: builds the image explorer-api invokes per
+  # block (docker run mev-inspect-py:local cli.py inspect-block-command <n>).
+  # `docker compose --profile tools run --rm mev-inspect -m alembic upgrade head`
+  # applies its migrations.
+  mev-inspect:
+    build: ./mev-monitor/mev-inspect-py
+    image: ${MEV_INSPECT_IMAGE:-mev-inspect-py:local}
+    profiles: ["tools"]
+    network_mode: host
+    working_dir: /app
+    entrypoint: ["python"]
+    environment:
+      POSTGRES_HOST: localhost
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-mev_inspect}
+      RPC_URL: ${RPC_URL}
+
+  explorer-api:
+    build:
+      context: .
+      dockerfile: apps/explorer-api/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # inside the compose network, postgres is reachable by service name
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    ports:
+      - "127.0.0.1:${EXPLORER_API_PORT:-3000}:3000"
+    volumes:
+      # explorer-api spawns mev-inspect-py containers on the host docker
+      # daemon (ADR-002) — the one privileged edge in this deployment.
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  explorer-web:
+    build:
+      context: .
+      dockerfile: apps/explorer-web/Dockerfile
+    ports:
+      - "127.0.0.1:${EXPLORER_WEB_PORT:-8080}:80"
+    depends_on:
+      - explorer-api
+
+volumes:
+  mev_inspect_pgdata:

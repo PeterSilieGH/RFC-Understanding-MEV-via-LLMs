@@ -1,0 +1,25 @@
+{
+  "name": "@mev/explorer-api",
+  "version": "1.0.0",
+  "description": "MEV Block Explorer API — TypeScript port of mev-monitor/server.js (ADR-003).",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@mev/config": "workspace:*",
+    "@mev/db": "workspace:*",
+    "ethers": "^6.13.4",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,50 @@
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import * as dotenv from "dotenv";
+import { z } from "zod";
+
+const configSchema = z.object({
+  RPC_URL: z.string().url().default("http://localhost:8504"),
+
+  POSTGRES_HOST: z.string().default("localhost"),
+  POSTGRES_PORT: z.coerce.number().int().default(5432),
+  POSTGRES_USER: z.string().default("postgres"),
+  POSTGRES_PASSWORD: z.string().default("password"),
+  POSTGRES_DB: z.string().default("mev_inspect"),
+
+  EXPLORER_API_PORT: z.coerce.number().int().default(3000),
+  TRACE_API_PORT: z.coerce.number().int().default(2021),
+  AGENT_API_PORT: z.coerce.number().int().default(3100),
+
+  MEV_INSPECT_IMAGE: z.string().default("mev-inspect-py:local"),
+
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ETHERSCAN_API_KEY: z.string().optional(),
+  COINGECKO_API_KEY: z.string().optional(),
+
+  LOG_LEVEL: z.string().default("info"),
+});
+
+export type Config = z.infer<typeof configSchema>;
+
+/** Walks up from cwd to find the repo-root .env (the single config source). */
+function findRootEnv(): string | undefined {
+  let dir = process.cwd();
+  while (true) {
+    const candidate = join(dir, ".env");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+let cached: Config | undefined;
+
+export function loadConfig(): Config {
+  if (cached) return cached;
+  const envPath = findRootEnv();
+  if (envPath) dotenv.config({ path: envPath });
+  cached = configSchema.parse(process.env);
+  return cached;
+}

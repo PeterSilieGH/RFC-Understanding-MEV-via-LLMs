@@ -1,56 +1,29 @@
 {
   "name": "rfc-understanding-mev-via-llms",
   "version": "1.0.0",
-  "description": "An open research framework and proposal for analyzing Maximal Extractable Value (MEV) on-chain using Large Language Models.",
+  "description": "MEV analysis platform: mev-inspect-py based block explorer, DiscoUI-derived trace visualization, and pi-harness agentic AI.",
+  "private": true,
   "type": "module",
-  "main": "dist/index.js",
-  "bin": {
-    "mev": "dist/cli/index.js"
-  },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsx watch src/cli/index.ts",
-    "test": "vitest",
-    "lint": "eslint src/",
-    "start": "node dist/index.js"
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "biome check apps packages",
+    "format": "biome format --write apps packages",
+    "dev": "turbo dev"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/PeterSilieGH/RFC-Understanding-MEV-via-LLMs.git"
   },
-  "keywords": [
-    "mev",
-    "ethereum",
-    "defi",
-    "flashbots",
-    "research",
-    "llm"
-  ],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/PeterSilieGH/RFC-Understanding-MEV-via-LLMs/issues"
-  },
-  "homepage": "https://github.com/PeterSilieGH/RFC-Understanding-MEV-via-LLMs#readme",
+  "keywords": ["mev", "ethereum", "defi", "flashbots", "research", "llm"],
+  "license": "MIT",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.79.1",
-    "axios": "^1.7.9",
-    "bottleneck": "^2.19.5",
-    "dotenv": "^17.4.2",
-    "ethers": "^6.13.4",
-    "express": "^5.2.1",
-    "pino": "^9.6.0",
-    "pino-pretty": "^13.1.0",
-    "viem": "^2.25.0",
-    "zod": "^3.24.1"
+    "@earendil-works/pi-coding-agent": "^0.79.1"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "typescript": "^5.7.3",
-    "tsx": "^4.19.2",
-    "vitest": "^4.1.8",
-    "eslint": "^9.18.0",
-    "@typescript-eslint/eslint-plugin": "^8.21.0",
-    "@typescript-eslint/parser": "^8.21.0"
-  }
+    "@biomejs/biome": "^1.9.4",
+    "turbo": "^2.5.0",
+    "typescript": "^5.7.3"
+  },
+  "packageManager": "pnpm@10.33.4"
 }

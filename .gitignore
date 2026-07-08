@@ -27,6 +27,7 @@ npm-debug.log*
 # Cache
 .cache/
 .parcel-cache/
+.turbo/
 
 # TypeScript
 *.tsbuildinfo
@@ -37,3 +38,11 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+
+# Agentic
+memory.jsonl
+
+# Vendored reference with its own nested git repos (mev-monitor/.git and
+# mev-monitor/mev-inspect-py/.git) - committing it would create broken
+# gitlinks; decide between real submodules or stripping .git before tracking.
+/mev-monitor/

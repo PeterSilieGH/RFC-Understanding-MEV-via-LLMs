@@ -1,0 +1,20 @@
+{
+  "name": "@mev/config",
+  "version": "1.0.0",
+  "description": "Unified .env loading and zod-validated configuration (ADR-002).",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3"
+  }
+}

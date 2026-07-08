@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MEV Block Explorer</title>
+<link rel="stylesheet" href="/style.css" />
+<script>
+  (function () {
+    var saved = localStorage.getItem("theme");
+    if (saved === "light") document.documentElement.dataset.theme = "light";
+  })();
+</script>
+</head>
+<body>
+  <header>
+    <div class="header-top">
+      <h1>MEV Block Explorer</h1>
+      <div class="header-top-right">
+        <button id="eurToggle" class="icon-btn glyph-btn" title="Toggle EUR display">Ξ</button>
+        <button id="themeToggle" class="icon-btn glyph-btn" title="Toggle light/dark mode">◐</button>
+        <div class="rpc-indicator" id="rpcIndicator">
+          <span class="dot" id="rpcDot"></span>
+          <span id="rpcText">connecting</span>
+        </div>
+      </div>
+    </div>
+    <p class="subtitle">[Beta] DSN MEV Detection Bot, powered by An<span class="underline">D</span>er<span class="underline">S</span>o<span class="underline">N</span></p>
+  </header>
+
+  <section class="controls">
+    <div class="control-group">
+      <button id="prevBtn" class="icon-btn" title="Previous block">←</button>
+      <input id="blockInput" type="number" placeholder="Block number" />
+      <button id="nextBtn" class="icon-btn" title="Next block">→</button>
+    </div>
+    <button id="loadBtn" class="primary">Load block</button>
+    <button id="latestBtn">Jump to latest</button>
+    <label class="toggle">
+      <input type="checkbox" id="liveToggle" checked />
+      <span class="switch"><span class="knob"></span></span>
+      Follow latest block
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="onlyMevToggle" />
+      <span class="switch"><span class="knob"></span></span>
+      Only show MEV transactions
+    </label>
+    <button id="legendBtn" class="ghost small">What does this mean?</button>
+  </section>
+
+  <div id="toast" class="toast"></div>
+
+  <section id="builderStatsTop" class="builder-stats-top">
+    <h2 id="builderStatsToggle" class="collapsible-header">
+      <span class="chevron">▾</span> Builder share <span class="hint">(across every block inspected so far)</span>
+    </h2>
+    <div id="builderStatsBody" class="builder-stats-body">
+      <div class="builder-relay-row">
+        <div class="builder-relay-col">
+          <h3>By builder</h3>
+          <div id="builderResultsTop"></div>
+        </div>
+        <div class="builder-relay-col">
+          <h3>By relay <span class="hint">(blocks viewed so far with a known winning bid)</span></h3>
+          <div id="relayResultsTop"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="legend" class="legend hidden"></section>
+
+  <section id="ticker" class="ticker"></section>
+
+  <section id="blockMeta" class="block-meta"></section>
+
+  <section id="stats" class="stats"></section>
+
+  <section id="loadingOverlay" class="loading-overlay hidden">
+    <div class="spinner"></div>
+    <p id="loadingText">Inspecting block…</p>
+    <p class="loading-hint">First-time inspection replays every transaction's execution trace — this can take up to a minute.</p>
+  </section>
+
+  <section id="result"></section>
+
+  <section class="explore">
+    <div class="explore-tabs">
+      <button class="explore-tab active" data-tab="address">Address lookup</button>
+      <button class="explore-tab" data-tab="leaderboard">Leaderboard</button>
+      <button class="explore-tab" data-tab="heatmap">Sandwiched pools</button>
+    </div>
+
+    <div class="explore-panel" id="panel-address">
+      <p class="explore-hint">Search any address across every block this explorer has ever inspected (stored in Postgres) to see its full MEV history.</p>
+      <div class="control-group address-search">
+        <input id="addressInput" type="text" placeholder="0x…" />
+        <button id="addressSearchBtn" class="primary">Search</button>
+      </div>
+      <div id="addressResults"></div>
+    </div>
+
+    <div class="explore-panel hidden" id="panel-leaderboard">
+      <p class="explore-hint">Top searchers, ranked by total profit in EUR (converted per token via the same price feed as the EUR display toggle) across all inspected blocks - same underlying data as the columns below, just combined per address so you can see generalists (active across multiple attack types) vs. specialists.</p>
+      <div id="topSearchersResults" class="top-searchers"></div>
+      <p class="explore-hint">Per-type breakdown, ranked by action count.</p>
+      <div id="leaderboardResults" class="leaderboard-grid"></div>
+    </div>
+
+    <div class="explore-panel hidden" id="panel-heatmap">
+      <p class="explore-hint">Liquidity pools that show up most often as the target of a sandwich attack, across all inspected blocks.</p>
+      <div id="heatmapResults"></div>
+    </div>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>

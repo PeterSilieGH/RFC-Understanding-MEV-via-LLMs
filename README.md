@@ -1,177 +1,123 @@
-# RFC-Understanding-MEV-via-LLMs
+# RFC: Understanding MEV via LLMs
 
-An open research framework and proposal for analyzing Maximal Extractable Value (MEV) on Ethereum using Large Language Models.
+A platform for analyzing Maximal Extractable Value (MEV) on Ethereum. It combines a
+trace-level **MEV Block Explorer** (based on Flashbots' mev-inspect-py), **contract-source
+and call-graph visualization** (derived from L2BEAT's DiscoUI), and **agentic AI** (the pi
+coding harness) that interprets execution traces and contracts grounded in the same data
+the UI shows.
 
-## Framework Structure
+The target architecture and the five milestones — with acceptance criteria — are in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Design decisions are recorded as ADRs in
+[`docs/adr/`](docs/adr).
+
+## Repository layout
 
 ```
-RFC-Understanding-MEV-via-LLMs/
-├── framework/                 # MEV research framework (TypeScript)
-│   ├── src/
-│   │   ├── eth/               # Ethereum data layer
-│   │   │   ├── client.ts      # EthClient — JSON-RPC, blocks, txs, traces
-│   │   │   └── oracle.ts      # PriceOracle — real-time token prices (CoinGecko)
-│   │   ├── analysis/
-│   │   │   ├── types.ts       # MEVType, MEVEvent, PendingTx, AnalysisResult
-│   │   │   └── profitability.ts # ProfitabilityEngine — gas cost & profit calc
-│   │   └── utils/logger.ts    # Pino logger
-│   ├── package.json
-│   └── tsconfig.json
-├── .pi/                       # pi harness config
-│   ├── AGENTS.md              # Framework instructions for pi
-│   └── skills/mev/
-│       └── SKILL.md           # /skill:mev — research workflow
-├── docs/
-│   └── ARCHITECTURE.md        # Full architecture doc
-└── README.md                  # This file
+├── apps/
+│   ├── explorer-api/   # Express — MEV explorer API (TypeScript port of mev-monitor)
+│   └── explorer-web/   # Vite — explorer frontend
+├── packages/
+│   ├── config/         # Unified .env loading, zod-validated (@mev/config)
+│   ├── db/             # Shared Postgres pool + app-owned tables (@mev/db)
+│   └── eth/            # EthClient, PriceOracle, ProfitabilityEngine (@mev/eth)
+├── mev-monitor/        # Reference implementation (plain JS) — port from, don't extend
+│   └── mev-inspect-py/ # Patched Flashbots inspector (Python, runs as a container)
+├── l2beat/             # Git submodule, read-only reference for DiscoUI extraction
+├── docs/               # ARCHITECTURE.md, L2BEAT.md analysis, adr/
+├── .pi/                # pi harness config (AGENTS.md, /skill:mev)
+├── docker-compose.yml  # postgres + all services
+└── .env / .env.example # One unified config file for everything
 ```
 
-## Quick Start
+Planned apps (see milestones M2–M5): `trace-api`, `trace-web` (WebGL call-graph
+visualization), and `agent-api` (pi-harness agent sessions).
 
-### 1. Install framework dependencies
+## Prerequisites
+
+- Node.js v22 (`.node-version`), pnpm, Docker with compose
+- An Ethereum RPC node with `trace_block` and `debug_traceTransaction` support —
+  reth or Erigon; plain geth won't work. This is the one external dependency the
+  compose stack does not provide.
+
+## Quick start
 
 ```bash
-cd framework && npm install
+# 1. Configure — one .env for everything
+cp .env.example .env
+# set at least RPC_URL
+
+# 2. Install & build
+pnpm install
+pnpm build          # turbo build across the workspace
+
+# 3. Run everything as containers
+docker compose build
+docker compose --profile tools run --rm mev-inspect -m alembic upgrade head   # DB migrations
+docker compose up -d
+
+# Explorer: http://localhost:8080  (EXPLORER_WEB_PORT)
+# API:      http://localhost:3000  (EXPLORER_API_PORT)
 ```
 
-### 2. Configure environment
+Requesting a block in the explorer triggers on-demand inspection: `explorer-api` runs the
+`mev-inspect-py:local` image once for that block, which writes classified traces, swaps,
+arbitrages, sandwiches, and liquidations to the shared Postgres. There is no background
+indexer.
+
+## Development
 
 ```bash
-cp framework/.env.example framework/.env
-# Edit .env: set ETHEREUM_RPC_URL (and optionally Tenderly, Flashbots keys)
+pnpm dev                                  # turbo dev (all apps)
+pnpm --filter @mev/explorer-api dev       # API only (tsx watch)
+pnpm --filter @mev/explorer-web dev       # frontend only (vite, proxies /api)
+
+pnpm test                                 # all tests via turbo
+pnpm --filter @mev/eth exec vitest run tests/oracle.test.ts   # single test file
+
+pnpm lint                                 # biome check apps packages
+pnpm format                               # biome format --write
 ```
 
-### 3. Build
+For local (non-container) dev you still need the shared Postgres:
+`docker compose up -d postgres`.
+
+## MEV detection
+
+Detection is two steps: **decode, then pattern-match**. mev-inspect-py decodes raw block
+traces into structured facts and pattern-matches a fixed set of strategies (arbitrage,
+sandwiches, liquidations, NFT trades, punk snipes). The explorer adds five read-only
+detectors over those facts, covering gaps flagged in MEV literature:
+
+| Detector | What it finds |
+|---|---|
+| JIT liquidity | Uniswap V3 position minted and removed within one block, around a swap |
+| Non-atomic arbitrage | A round trip split across two transactions from the same sender |
+| Liquidation sandwich | The liquidator's own swap pushing a position underwater first |
+| Liquidation race | Competing liquidation attempts on the same borrower; losers revert |
+| NFT flip | Same NFT bought and resold at a profit within one block |
+
+The full write-up of the pipeline, heuristics, and their research basis is in
+[`mev-monitor/README.md`](mev-monitor/README.md).
+
+## Using the pi harness
 
 ```bash
-cd framework && npm run build
+npx pi          # from the repo root
 ```
 
-### 4. Use from the CLI
-
-```bash
-# Check the latest block
-curl -s -X POST $ETHEREUM_RPC_URL \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
-
-# Or with the framework (TypeScript):
-cd framework && npx tsx -e "
-import { EthClient } from './src/eth/client.js';
-import * as dotenv from 'dotenv';
-dotenv.config();
-const eth = EthClient.fromChain('mainnet');
-const block = await eth.getBlock(20_000_000);
-console.log('Block:', JSON.stringify(block, null, 2));
-"
-```
-
-### 5. Use with pi
-
-```bash
-# Start the MEV research pi session
-npx pi
-```
-
-Once in pi, type `/skill:mev` to load the MEV research skill and start asking questions like:
-
-```
-Find sandwich attacks in block 19,500,000
-What MEV events happened between blocks 19,500,000 and 19,500,100?
-Explain the arbitrage loop in transaction 0xabc...
-```
-
-## Core APIs
-
-### EthClient
-
-```typescript
-import { EthClient } from 'mev-research-framework';
-
-// Connect to a chain
-const eth = EthClient.fromChain('mainnet');
-// or: new EthClient({ name, rpcUrl, chainId })
-
-const block = await eth.getBlock(20_000_000);
-const tx = await eth.getTransaction('0xabc...');
-const trace = await eth.traceCall({ to: '0x...', data: '0x...' }, blockNumber);
-const storage = await eth.getStorageAt('0xUniPool', '0x0');
-const gas = await eth.getGasPrice();
-const latest = await eth.getLatestBlockNumber();
-```
-
-### PriceOracle
-
-```typescript
-import { PriceOracle } from 'mev-research-framework';
-const oracle = new PriceOracle();
-const price = await oracle.getPrice('ETH');     // { symbol: 'ETH', usdPrice: 3500 }
-const prices = await oracle.getPrices(['ETH', 'WETH', 'USDC']);
-```
-
-### ProfitabilityEngine
-
-```typescript
-import { ProfitabilityEngine } from 'mev-research-framework';
-const engine = new ProfitabilityEngine();
-const result = engine.calculate({
-  gasUsed: 150_000n,
-  gasPrice: 30_000_000_000n,   // 30 gwei
-  revenue: 100_000_000_000_000_000n,  // 0.1 ETH
-});
-// result.profitWei — net profit in wei
-// result.netProfit — net profit in wei
-// result.breakdown — revenue, gasCostWei, totalCost
-```
-
-## MEV Types in Scope
-
-| Type | Description | Status |
-|------|-------------|--------|
-| `arbitrage` | Cross-DEX price arbitrage | planned |
-| `sandwich` | FR + victim + BR pattern | planned |
-| `liquidation` | DeFi liquidation calls | planned |
-| `jit` | Just-in-time LP provision | planned |
-| `frontrun` | Generic frontrunning | planned |
-| `backrun` | Backrun after large tx | planned |
-| `multihop` | Multi-route arbitrage | planned |
-
-## Environment Variables
-
-```env
-ETHEREUM_RPC_URL=https://eth.llamarpc.com
-OPTIMISM_RPC_URL=
-ARBITRUM_RPC_URL=
-BASE_RPC_URL=
-TENDERLY_ACCESS_KEY=
-TENDERLY_ACCOUNT_ID=
-TENDERLY_PROJECT_SLUG=
-FLASHBOTS_AUTH_KEY=
-FLASHBOTS_SIGNING_KEY=
-LOG_LEVEL=info
-```
+Then `/skill:mev` loads the MEV research workflow. Agent instructions live in
+[`.pi/AGENTS.md`](.pi/AGENTS.md). This project is for detection, analysis, simulation,
+and research reporting — not for building extraction bots that harm ordinary users.
 
 ## Status
 
-- [x] Framework scaffold & build system
-- [x] `EthClient` — blocks, txs, storage, traces, raw RPC
-- [x] `PriceOracle` — CoinGecko price feed
-- [x] `ProfitabilityEngine` — gas & profit calc
-- [x] `ProfitabilityEngine.calculateAnnotated` — USD annotation
-- [x] pi skill + AGENTS.md
-- [x] Unit tests (Vitest) — 48 passing
-  - `profitability.test.ts` — 22 tests for `ProfitabilityEngine`
-  - `oracle.test.ts` — 16 tests for `PriceOracle`
-  - `types.test.ts` — 10 tests for types, chain registry, logger
-- [ ] Arbitrage detector
-- [ ] Sandwich detector
-- [ ] Liquidation detector
-- [ ] Mempool watcher
-- [ ] Flashbots integration
-- [ ] Tenderly simulation
-- [ ] CLI
-- [ ] Historical analysis / replay
-- [ ] Reports
+- [x] Monorepo: pnpm workspaces + Turborepo + Biome, unified `.env`, docker compose (ADR-001/002)
+- [x] M1 (in progress): `mev-monitor` ported to TypeScript (`explorer-api` + `explorer-web`);
+      remaining: behavior verification against the reference on live-inspected blocks
+- [ ] M2 — DiscoUI extraction (`trace-api`, contract sources, call trees)
+- [ ] M3 — WebGL call-graph and execution-trace visualization
+- [ ] M4 — Explorer ↔ trace visualization wiring
+- [ ] M5 — Agentic AI over traces and contracts (`agent-api`)
 
 ## License
 

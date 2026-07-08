@@ -1,0 +1,15 @@
+{
+  "name": "@mev/explorer-web",
+  "version": "1.0.0",
+  "description": "MEV Block Explorer frontend — Vite port of mev-monitor/public (ADR-003).",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

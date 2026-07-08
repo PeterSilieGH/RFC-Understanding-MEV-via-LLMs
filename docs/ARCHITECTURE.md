@@ -1,177 +1,121 @@
-# MEV Research Framework — Architecture
+# MEV Analysis Platform — Architecture
 
 ## Overview
 
-A modular framework for conducting MEV (Maximal Extractable Value) research on Ethereum, powered by the pi coding harness. Designed for LLM-driven analysis, bot development, and on-chain research.
+A platform for analyzing Maximal Extractable Value (MEV) on Ethereum. It combines three proven components into one integrated, containerized stack:
 
----
+1. **MEV Block Explorer** — trace-level MEV classification per block, based on Flashbots' mev-inspect-py plus five additional detectors (reference implementation: `mev-monitor/`).
+2. **DiscoUI** — contract-source browsing and node/edge graph visualization, extracted from L2BEAT's `l2b` / `protocolbeat` / `discovery` packages (reference: `l2beat/` submodule, analysis in `docs/L2BEAT.md`).
+3. **Agentic AI** — the pi coding harness (`@earendil-works/pi-coding-agent`) driving interpretation of execution traces and contract sources.
 
-## Module Map
+The platform answers: *for a given block or transaction, what MEV was extracted, how did the execution flow through which contracts, and what does it mean?* — with the last question answered interactively by an LLM agent grounded in the same data the UI shows.
 
-```
-mev-research-framework/
-├── src/
-│   ├── eth/                  # Ethereum data layer
-│   │   ├── client.ts         # JSON-RPC client (ethers.js)
-│   │   ├── mempool.ts        # Mempool streamer (tx pool subscription)
-│   │   ├── state.ts          # State-at-block / simulation
-│   │   └── oracle.ts         # Price feeds for profit calc
-│   │
-│   ├── analysis/             # MEV analysis engine
-│   │   ├── detector.ts       # Pattern detection (arbitrage, sandwich, liquidation)
-│   │   ├── extractor.ts      # MEV opportunity scoring & extraction logic
-│   │   ├── profitability.ts  # Gas & token profit calculations
-│   │   └── flashbots.ts      # Flashbots MEV-boost / mev-share integration
-│   │
-│   ├── data/                 # Data storage & retrieval
-│   │   ├── db.ts             # SQLite/PostgreSQL persistence
-│   │   ├── blocks.ts         # Block / tx history ingest
-│   │   └── export.ts         # CSV / JSON export
-│   │
-│   ├── simulation/           # Backtesting & simulation
-│   │   ├── tenderly.ts       # Tenderly Simulation API
-│   │   ├── local.ts          # Local VM (hardhat, evm-dafny)
-│   │   └── replay.ts         # Transaction replay
-│   │
-│   ├── cli/                  # CLI commands
-│   │   ├── index.ts          # Main CLI entry point
-│   │   ├── cmd/
-│   │   │   ├── mempool.ts    # mempool watch command
-│   │   │   ├── analyze.ts    # analyze block / tx command
-│   │   │   ├── search.ts     # search historical MEV patterns
-│   │   │   ├── simulate.ts   # simulation command
-│   │   │   └── bundle.ts     # bundle submission command
-│   │   └── prompt.ts         # interactive research prompt builder
-│   │
-│   └── research/              # High-level research workflows
-│       ├── arb.ts            # Cross-exchange arbitrage research
-│       ├── liquidation.ts    # DeFi liquidation finder
-│       ├── sandwich.ts       # Sandwich attack analyzer
-│       ├── jitter.ts         # JIT liquidity provision
-│       ├── frontrun.ts       # Generic frontrun opportunity finder
-│       └── report.ts         # Auto-generated MEV reports
-│
-├── .pi/                      # pi harness config
-│   ├── AGENTS.md             # Framework instructions for pi
-│   ├── skills/               # pi skills
-│   │   └── mev/
-│   │       └── SKILL.md      # MEV research skill
-│   ├── prompts/              # pi prompt templates
-│   │   ├── analyze-block.md
-│   │   ├── find-arbitrage.md
-│   │   └── explain-mev.md
-│   └── extensions/           # pi extensions (optional)
-│
-├── scripts/                  # One-off research scripts
-├── tests/                    # Unit & integration tests
-├── docs/                     # Architecture, guides, papers
-├── data/                     # Local SQLite DB, CSV exports
-│
-├── package.json
-├── tsconfig.json
-├── .env.example
-└── README.md
-```
+## Global Requirements (binding)
 
----
-
-## Core Dependencies
-
-```json
-{
-  "dependencies": {
-    "ethers": "^6",
-    "@flashbots/mev-search": "^1.0",
-    "axios": "^1.7",
-    "sqlite3": "^5",
-    "dotenv": "^17",
-    "zod": "^3",
-    "viem": "^2"
-  }
-}
-```
-
----
-
-## Key Design Decisions
-
-### 1. Dual RPC Layer
-Use both **ethers.js** (for general EVM interaction) and **viem** (for low-level tracing and statediff). This gives us both developer ergonomics and raw trace access.
-
-### 2. Simulated MEV vs. Historical
-The framework separates:
-- **Live mode**: watch mempool, simulate on pending txs, submit bundles
-- **History mode**: analyze past blocks, replay known MEV, backtest detection
-
-### 3. Flashbots Integration
-- `mev-boost` relay connection for block proposal data
-- `mev-share` for hinting and bundle backruns
-- Ethical MEV by default (no sandwich/liquidation extraction that harms users)
-
-### 4. Price Oracle
-For profitability analysis, the framework uses:
-- **Binance / Coinbase** public REST APIs (free, no auth)
-- **Chainlink** on-chain feeds as fallback
-- Cached every 5s for mempool analysis
-
-### 5. LLM-Driven Analysis (pi)
-pi acts as the **researcher layer**:
-- Natural language queries: "find sandwich attacks in block 19,234,567"
-- Code generation: write a Solidity contract for a new strategy
-- Report generation: summarize MEV activity over a time window
-- Tool orchestration: chain together mempool watching → simulation → bundle submission
-
-### 6. Data Storage
-- **SQLite** for local persistence (zero-setup, fast)
-- Block/tx data cached locally to avoid re-fetching
-- Export to CSV/JSON for external analysis (Dune,ibi)
-
----
-
-## Research Workflows (pi Skills)
-
-### Skill: `mev-research` (`.pi/skills/mev/SKILL.md`)
-
-Invoked via `/skill:mev` or auto-loaded when in a research session. Steps:
-
-1. **Connect** — verify Ethereum RPC / Flashbots auth
-2. **Scope** — define block range, target contracts, opportunity types
-3. **Collect** — pull mempool, historical blocks, or both
-4. **Analyze** — run pattern detectors, profitability calc, simulation
-5. **Report** — generate findings, code snippets, visualizations
-6. **Iterate** — refine based on findings
-
-### Prompt Templates (`.pi/prompts/`)
-
-| Template | Use |
+| Requirement | Decision |
 |---|---|
-| `analyze-block.md` | Analyze a specific block for MEV activity |
-| `find-arbitrage.md` | Find cross DEX arbitrage opportunities |
-| `explain-mev.md` | Explain a specific MEV extraction in plain English |
-| `sandwich-report.md` | Generate a sandwich attack report |
-| `mev-timeline.md` | Build a timeline of MEV events in a time range |
+| Package manager / monorepo | pnpm workspaces + Turborepo ([ADR-001](adr/001-monorepo-tooling.md)) |
+| Language | TypeScript everywhere (mev-inspect-py stays Python, containerized) |
+| Lint / format | Biome |
+| Frontends | Vite (+ React) |
+| APIs | Express |
+| Database | **One shared Postgres instance** for all services ([ADR-002](adr/002-shared-postgres-unified-env.md)) |
+| Configuration | **One unified root `.env`** (API keys, RPC URLs, ports); `.env.example` kept in sync |
+| Deployment | `docker compose` builds and runs every service as a container |
 
----
+## Target Monorepo Layout
 
-## Next Steps (Priority Order)
+```
+├── apps/
+│   ├── explorer-api/        # Express — MEV explorer API (port of mev-monitor/server.js + lib/)
+│   ├── explorer-web/        # Vite — explorer frontend (port of mev-monitor/public/)
+│   ├── trace-api/           # Express — execution-trace + contract-source API (DiscoUI-derived)
+│   ├── trace-web/           # Vite — trace/call-graph visualization (WebGL) + source viewer
+│   └── agent-api/           # Express — pi-harness agent sessions over traces/contracts
+├── packages/
+│   ├── db/                  # Shared Postgres client, schema types, migrations for app-owned tables
+│   ├── eth/                 # EthClient, PriceOracle, ProfitabilityEngine (absorbed from src/)
+│   ├── trace-graph/         # Trace → graph model transforms (shared by trace-api and trace-web)
+│   └── config/              # Unified .env loading + zod-validated config schema
+├── mev-monitor/             # Reference implementation (JS) — port from, don't extend
+│   └── mev-inspect-py/      # Patched Flashbots inspector (Python, containerized)
+├── l2beat/                  # Git submodule — read-only reference for DiscoUI extraction
+├── docs/
+│   ├── ARCHITECTURE.md      # This file
+│   ├── L2BEAT.md            # DiscoUI/l2beat analysis and API map
+│   └── adr/                 # Architecture Decision Records
+├── .pi/                     # pi harness config (AGENTS.md, skills)
+├── docker-compose.yml       # postgres + all apps
+├── turbo.json / biome.json / pnpm-workspace.yaml
+└── .env / .env.example      # Single source of configuration
+```
 
-1. **Ethereum client** (`src/eth/client.ts`) — connect to RPC, fetch blocks, txs
-2. **Price oracle** (`src/eth/oracle.ts`) — real-time token prices for profit calc
-3. **Profitability engine** (`src/analysis/profitability.ts`) — gas + price aware PnL
-4. **Mempool watcher** (`src/eth/mempool.ts`) — stream pending transactions
-5. **Arbitrage detector** (`src/research/arb.ts`) — cross-DEX opportunity finder
-6. **Sandwich detector** (`src/research/sandwich.ts`) — FR + FR victim pattern
-7. **Flashbots integration** (`src/analysis/flashbots.ts`) — bundle submission
-8. **pi skill** (`.pi/skills/mev/SKILL.md`) — bring it all together for the LLM
-9. **CLI** — `src/cli/index.ts` — interactive and batch modes
-10. **Simulation** (`src/simulation/`) — Tenderly + replay
+## Data Flow
 
----
+```
+        reth/Erigon RPC (trace_block, debug_traceTransaction)
+              │                          │
+              ▼                          ▼
+   mev-inspect-py (on-demand      trace-api: getDebugTrace()
+   docker run per block)          call tree + contract sources
+              │                          │
+              ▼                          ▼
+   ┌─────────────────────  Postgres (shared)  ─────────────────────┐
+   │ mev-inspect tables: classified_traces, swaps, arbitrages, …   │
+   │ app tables: block_builders, block_bids, trace/source caches   │
+   └───────────────────────────────────────────────────────────────┘
+              │                          │                    │
+              ▼                          ▼                    ▼
+        explorer-api                trace-api             agent-api
+              │                          │                (pi harness)
+              ▼                          ▼                    │
+        explorer-web  ── links tx ──▶ trace-web  ◀── annotates ┘
+```
+
+Two principles carried over from the reference implementations:
+
+- **Decode, then pattern-match.** mev-inspect-py decodes raw traces into structured facts; all MEV detectors (its own and the five extra ones) are read-only pattern matches over those facts. New detectors follow the same rule: query, never write, mev-inspect-py's tables.
+- **On-demand inspection.** No background indexer. The first request for a block triggers a containerized `mev-inspect-py` run (deduplicated per block number); results persist in Postgres.
+
+## Milestones
+
+### M1 — Port the MEV Block Explorer to the platform stack
+
+Extract the capabilities of `mev-monitor/` (Express API, five extra detectors, mempool watcher, builder/relay identification, EUR pricing, static frontend) into `apps/explorer-api` + `apps/explorer-web`, TypeScript, running as containers against the shared Postgres.
+
+**Done when:** `docker compose up` serves the explorer; requesting a block triggers on-demand inspection; all detector classes from `mev-monitor/README.md` render; behavior verified against the reference implementation on the same block.
+
+### M2 — Extract DiscoUI capabilities from l2beat
+
+Stand up `apps/trace-api` exposing contract sources, discovery metadata, and `debug_traceTransaction` call trees, following the extraction map in `docs/L2BEAT.md` (provider patterns from `packages/discovery`, API patterns from `l2b`'s discovery-ui). `apps/trace-web` renders the DiscoUI-style project/contract views. The l2beat submodule stays unmodified and pinned.
+
+**Done when:** for an address in an inspected block, the UI shows contract sources and metadata; for a tx hash, the API returns a normalized call-tree JSON (`eth:0x…` vs `0x…` address forms reconciled).
+
+### M3 — WebGL call-graph and execution-trace visualization
+
+Add a WebGL-based graph renderer to `apps/trace-web` for transaction call trees (calls, delegatecalls, creates, logs, token flows), with a trace-specific graph model in `packages/trace-graph` — not a retrofit of DiscoUI's static `ApiProjectResponse` ([ADR-005](adr/005-webgl-trace-visualization.md)). Must handle large MEV transactions (pruning, clustering, lazy expansion).
+
+**Done when:** a known arbitrage/sandwich tx renders as an interactive graph at 60fps for traces with thousands of calls; nodes link to contract sources from M2.
+
+### M4 — Wire the explorer to the trace visualization
+
+Every transaction in the explorer links to its execution trace view; trace nodes are enriched with explorer knowledge (MEV labels, token transfers, decoded swaps from Postgres) and discovery metadata (contract names, proxy implementations).
+
+**Done when:** clicking a sandwich transaction in the explorer opens its trace with front-run/victim/back-run legs and the involved pool contracts visually annotated, and each contract's source is one click away.
+
+### M5 — Agentic AI over traces and contracts
+
+`apps/agent-api` embeds the pi coding harness with tools to read the shared Postgres, fetch traces via trace-api, and retrieve contract sources — so an agent can answer "explain what this transaction did and why it was profitable" grounded in the same data the UI shows. Sessions stream to the frontends; `.pi/` skills define the research workflows.
+
+**Done when:** from a trace view, a user can start an agent session about the visible transaction and receive a grounded, citable explanation referencing actual trace calls and source lines.
+
+## External Dependencies
+
+- **RPC node with `trace_block` + `debug_traceTransaction`** (reth or Erigon; plain geth lacks `trace_block`). Provided externally, configured via `.env` — never started by compose.
+- **MEV-Boost relay data APIs** (winning-bid lookup) and **CoinGecko** (EUR prices) — public HTTP, cached in Postgres/memory.
 
 ## Notes & Caveats
 
-- **No financial advice**: Framework is for research only
-- **Node diversity**: support mainnet + testnets (Holesky, Sepolia)
-- **Rate limits**: respect RPC provider limits; add retry/backoff
-- **Privacy**: mempool data is public; no PII concerns
-- **Flashbots auth**: requires Flashbots account + RPC endpoint for bundle submission
+- mev-inspect-py's USD-summary step fails without a price feed; treat that failure as success when the block row exists (see `mev-monitor/lib/inspector.js`).
+- DiscoUI's API is internal and unversioned — pin the l2beat submodule commit; wrap everything we use in our own adapters ([ADR-004](adr/004-discoui-extraction.md)).
+- MEV traces can be huge; the trace API returns a reduced graph model by default, raw traces only on request.
