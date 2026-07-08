@@ -20,9 +20,9 @@ The target architecture and the five milestones — with acceptance criteria —
 │   ├── config/         # Unified .env loading, zod-validated (@mev/config)
 │   ├── db/             # Shared Postgres pool + app-owned tables (@mev/db)
 │   └── eth/            # EthClient, PriceOracle, ProfitabilityEngine (@mev/eth)
-├── mev-monitor/        # Reference implementation (plain JS) — port from, don't extend
-│   └── mev-inspect-py/ # Patched Flashbots inspector (Python, runs as a container)
-├── l2beat/             # Git submodule, read-only reference for DiscoUI extraction
+├── mev-monitor/        # Reference implementation (plain JS) — gitignored local checkout
+│   └── mev-inspect-py/ # Patched Flashbots inspector, consumed only as a docker image
+├── l2beat/             # Git submodule — temporary read-only reference, to be obsoleted
 ├── docs/               # ARCHITECTURE.md, L2BEAT.md analysis, adr/
 ├── .pi/                # pi harness config (AGENTS.md, /skill:mev)
 ├── docker-compose.yml  # postgres + all services
@@ -50,9 +50,14 @@ cp .env.example .env
 pnpm install
 pnpm build          # turbo build across the workspace
 
-# 3. Run everything as containers
+# 3. Build the mev-inspect-py image + run migrations
+#    (needs the gitignored mev-monitor/ checkout locally; the image is the
+#    only thing the platform uses from it)
+docker compose --profile tools build mev-inspect
+docker compose --profile tools run --rm mev-inspect -m alembic upgrade head
+
+# 4. Run everything as containers
 docker compose build
-docker compose --profile tools run --rm mev-inspect -m alembic upgrade head   # DB migrations
 docker compose up -d
 
 # Explorer: http://localhost:8080  (EXPLORER_WEB_PORT)

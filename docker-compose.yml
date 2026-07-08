@@ -17,6 +17,8 @@ services:
 
   # Not a long-running service: builds the image explorer-api invokes per
   # block (docker run mev-inspect-py:local cli.py inspect-block-command <n>).
+  # The build context lives in the gitignored local mev-monitor/ checkout —
+  # the image is the platform's only dependency on it (ADR-003).
   # `docker compose --profile tools run --rm mev-inspect -m alembic upgrade head`
   # applies its migrations.
   mev-inspect:

@@ -10,15 +10,15 @@ DiscoUI lives across three l2beat packages: `l2b` (Express backend), `protocolbe
 
 ## Decision
 
-Option (c), staged as in `docs/L2BEAT.md`:
+Option (c), staged as in `docs/L2BEAT.md`, with the explicit end state that **the submodule becomes obsolete**:
 
-1. The `l2beat/` submodule stays **read-only and pinned**; we never modify it. Where a package is importable (notably `@l2beat/discovery` for `getDebugTrace()`, `ConfigReader`, source fetching), we depend on it from the pinned submodule; where it isn't, we re-implement the pattern in our own code (e.g. `l2b`'s `getProjects`/`getCode` route logic, protocolbeat's graph-render concepts).
+1. The `l2beat/` submodule stays **read-only and pinned**; we never modify it, and we do not import from it. Required parts (the `getDebugTrace()` provider pattern, source fetching, `l2b` route logic, protocolbeat graph-render concepts) are ported into the monorepo with provenance headers pointing at the pinned commit. Once all needed capabilities are ported, the submodule is removed.
 2. `apps/trace-api` exposes our own stable API (`/api/traces/:chain/:txHash/graph`, `/api/contracts/:address/code`, …) returning our own types from `packages/trace-graph` — DiscoUI types never leak past the adapter layer.
 3. Traces get a **dedicated graph model**, not a retrofit of `ApiProjectResponse` (whose edges are static address-valued contract fields, semantically wrong for dynamic call flow).
 4. Address normalization (`eth:0x…` chain-specific vs plain `0x…`) happens once, at the adapter boundary in `trace-api`.
 
 ## Consequences
 
-- Upgrading the submodule is a deliberate, reviewed action (re-pin + adapter check), not routine maintenance.
-- Some duplication with l2beat code we couldn't import — accepted in exchange for a stable API surface of our own.
-- If depending on unpublished workspace packages from the submodule proves brittle under pnpm, the fallback is vendoring the few needed source files with provenance headers; that choice is local to `trace-api` and doesn't change this ADR's shape.
+- Duplication with l2beat code — accepted in exchange for a stable API surface of our own and independence from an unversioned internal API.
+- Ported code drifts from upstream by design; upstream fixes must be cherry-picked consciously (the provenance headers say where to look).
+- The submodule serves as reference documentation only (it may also hold local uncommitted files like `.env`s); its removal is the completion criterion for this ADR.

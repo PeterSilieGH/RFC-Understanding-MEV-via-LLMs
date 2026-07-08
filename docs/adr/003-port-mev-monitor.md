@@ -12,8 +12,8 @@ Accepted — 2026-07-08
 
 - **Port, don't wrap.** `server.js` + `lib/` are rewritten as `apps/explorer-api` (TypeScript, ESM, Express 5, `pg`), preserving API routes and detector semantics 1:1. Each detector's documented heuristic (including the tuned thresholds: 1% arbitrage leg matching lives in mev-inspect-py; 30% amount tolerance for non-atomic arbitrage; tx-hash dedup in liquidation races) is carried over with its rationale as comments/tests.
 - **The frontend is ported to Vite** as `apps/explorer-web` (from `public/`), served as its own container; the API no longer serves static files.
-- **mev-inspect-py is not ported.** It stays a patched Python codebase built into the `mev-inspect-py:local` image and invoked per block. Rewriting its classifier library (Uniswap/Curve/Balancer/Aave/… ABIs and helpers) would be high-cost, high-risk, zero-benefit.
-- `mev-monitor/` remains in-tree, frozen, as the verification reference: ported behavior is validated by comparing API responses for the same blocks against it.
+- **mev-inspect-py is not ported.** It stays a patched Python codebase consumed strictly as the `mev-inspect-py:local` docker image (built via the compose `tools` profile) and invoked per block. Rewriting its classifier library (Uniswap/Curve/Balancer/Aave/… ABIs and helpers) would be high-cost, high-risk, zero-benefit.
+- `mev-monitor/` remains a **gitignored local checkout**, frozen, as the verification reference: it contains nested git repos (its own and mev-inspect-py's), so tracking it would create broken gitlinks. Ported behavior is validated by comparing API responses for the same blocks against it. The docker image is the only runtime dependency on this checkout.
 
 ## Consequences
 

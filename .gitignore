@@ -42,7 +42,8 @@ coverage/
 # Agentic
 memory.jsonl
 
-# Vendored reference with its own nested git repos (mev-monitor/.git and
-# mev-monitor/mev-inspect-py/.git) - committing it would create broken
-# gitlinks; decide between real submodules or stripping .git before tracking.
+# Local-only reference checkout with its own nested git repos
+# (mev-monitor/.git and mev-monitor/mev-inspect-py/.git). Deliberately
+# untracked: all its JS is ported into apps/ and packages/, and the only
+# runtime dependency on it is building the mev-inspect-py:local docker image.
 /mev-monitor/

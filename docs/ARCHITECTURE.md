@@ -37,9 +37,9 @@ The platform answers: *for a given block or transaction, what MEV was extracted,
 │   ├── eth/                 # EthClient, PriceOracle, ProfitabilityEngine (absorbed from src/)
 │   ├── trace-graph/         # Trace → graph model transforms (shared by trace-api and trace-web)
 │   └── config/              # Unified .env loading + zod-validated config schema
-├── mev-monitor/             # Reference implementation (JS) — port from, don't extend
-│   └── mev-inspect-py/      # Patched Flashbots inspector (Python, containerized)
-├── l2beat/                  # Git submodule — read-only reference for DiscoUI extraction
+├── mev-monitor/             # Reference implementation (JS) — gitignored local checkout
+│   └── mev-inspect-py/      # Patched inspector, consumed only as docker image (Python)
+├── l2beat/                  # Git submodule — temporary read-only reference, to be obsoleted
 ├── docs/
 │   ├── ARCHITECTURE.md      # This file
 │   ├── L2BEAT.md            # DiscoUI/l2beat analysis and API map
@@ -117,5 +117,6 @@ Every transaction in the explorer links to its execution trace view; trace nodes
 ## Notes & Caveats
 
 - mev-inspect-py's USD-summary step fails without a price feed; treat that failure as success when the block row exists (see `mev-monitor/lib/inspector.js`).
-- DiscoUI's API is internal and unversioned — pin the l2beat submodule commit; wrap everything we use in our own adapters ([ADR-004](adr/004-discoui-extraction.md)).
+- DiscoUI's API is internal and unversioned — required parts are ported into the monorepo with provenance headers rather than imported; the pinned l2beat submodule is a temporary reference slated for removal ([ADR-004](adr/004-discoui-extraction.md)).
+- `mev-monitor/` is a gitignored local checkout (nested git repos); the platform's only runtime dependency on it is building `mev-inspect-py:local` via the compose `tools` profile.
 - MEV traces can be huge; the trace API returns a reduced graph model by default, raw traces only on request.
