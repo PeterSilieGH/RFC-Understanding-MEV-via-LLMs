@@ -65,5 +65,27 @@ services:
     depends_on:
       - explorer-api
 
+  trace-api:
+    build:
+      context: .
+      dockerfile: apps/trace-api/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:${TRACE_API_PORT:-2021}:2021"
+
+  trace-web:
+    build:
+      context: .
+      dockerfile: apps/trace-web/Dockerfile
+    ports:
+      - "127.0.0.1:${TRACE_WEB_PORT:-8081}:80"
+    depends_on:
+      - trace-api
+
 volumes:
   mev_inspect_pgdata:
+    # Set POSTGRES_VOLUME to reuse an existing data volume (e.g. the one the
+    # reference mev-monitor stack created: mev-monitor_mev_inspect_pgdata).
+    name: ${POSTGRES_VOLUME:-mev_inspect_pgdata}

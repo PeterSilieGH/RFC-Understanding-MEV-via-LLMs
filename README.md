@@ -15,11 +15,14 @@ The target architecture and the five milestones — with acceptance criteria —
 ```
 ├── apps/
 │   ├── explorer-api/   # Express — MEV explorer API (TypeScript port of mev-monitor)
-│   └── explorer-web/   # Vite — explorer frontend
+│   ├── explorer-web/   # Vite — explorer frontend
+│   ├── trace-api/      # Express — execution traces + contract sources (DiscoUI-derived)
+│   └── trace-web/      # Vite + React — call-tree & source viewer (WebGL graph in M3)
 ├── packages/
 │   ├── config/         # Unified .env loading, zod-validated (@mev/config)
 │   ├── db/             # Shared Postgres pool + app-owned tables (@mev/db)
-│   └── eth/            # EthClient, PriceOracle, ProfitabilityEngine (@mev/eth)
+│   ├── eth/            # EthClient, PriceOracle, ProfitabilityEngine (@mev/eth)
+│   └── trace-graph/    # Trace graph model + transforms (@mev/trace-graph)
 ├── mev-monitor/        # Reference implementation (plain JS) — gitignored local checkout
 │   └── mev-inspect-py/ # Patched Flashbots inspector, consumed only as a docker image
 ├── l2beat/             # Git submodule — temporary read-only reference, to be obsoleted
@@ -60,8 +63,10 @@ docker compose --profile tools run --rm mev-inspect -m alembic upgrade head
 docker compose build
 docker compose up -d
 
-# Explorer: http://localhost:8080  (EXPLORER_WEB_PORT)
-# API:      http://localhost:3000  (EXPLORER_API_PORT)
+# Explorer:  http://localhost:8080  (EXPLORER_WEB_PORT)
+# API:       http://localhost:3000  (EXPLORER_API_PORT)
+# Traces:    http://localhost:8081  (TRACE_WEB_PORT)
+# Trace API: http://localhost:2021  (TRACE_API_PORT; contract sources need ETHERSCAN_API_KEY)
 ```
 
 Requesting a block in the explorer triggers on-demand inspection: `explorer-api` runs the
@@ -119,7 +124,9 @@ and research reporting — not for building extraction bots that harm ordinary u
 - [x] Monorepo: pnpm workspaces + Turborepo + Biome, unified `.env`, docker compose (ADR-001/002)
 - [x] M1 (in progress): `mev-monitor` ported to TypeScript (`explorer-api` + `explorer-web`);
       remaining: behavior verification against the reference on live-inspected blocks
-- [ ] M2 — DiscoUI extraction (`trace-api`, contract sources, call trees)
+- [x] M2 (in progress): `trace-api` + `trace-web` — call-tree graphs via
+      `debug_traceTransaction`, contract sources/metadata via Etherscan;
+      remaining: discovery-style relation metadata, verification against live traces
 - [ ] M3 — WebGL call-graph and execution-trace visualization
 - [ ] M4 — Explorer ↔ trace visualization wiring
 - [ ] M5 — Agentic AI over traces and contracts (`agent-api`)

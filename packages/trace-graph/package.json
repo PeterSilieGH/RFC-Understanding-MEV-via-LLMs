@@ -1,0 +1,22 @@
+{
+  "name": "@mev/trace-graph",
+  "version": "1.0.0",
+  "description": "Execution-trace graph model and transforms shared by trace-api and trace-web (ADR-004/005).",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.8"
+  }
+}
