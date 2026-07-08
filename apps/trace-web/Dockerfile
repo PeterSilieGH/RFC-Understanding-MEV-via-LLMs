@@ -10,6 +10,6 @@ RUN pnpm install --frozen-lockfile --filter @mev/trace-web... \
     && pnpm --filter @mev/trace-web build
 
 FROM nginx:alpine
-COPY apps/trace-web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY apps/trace-web/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /repo/apps/trace-web/dist /usr/share/nginx/html
-EXPOSE 80
+

@@ -1,0 +1,17 @@
+# Host-networked (see docker-compose.yml): listens on the host port directly
+# and proxies the API over loopback, so no traffic crosses a docker bridge
+# (host firewalls block bridge->host by default).
+server {
+  listen ${TRACE_WEB_PORT};
+  root /usr/share/nginx/html;
+  index index.html;
+
+  location /api/ {
+    proxy_pass http://127.0.0.1:${TRACE_API_PORT};
+    proxy_set_header Host $host;
+  }
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+}

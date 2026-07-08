@@ -40,7 +40,12 @@ visualization), and `agent-api` (pi-harness agent sessions).
 - Node.js v22 (`.node-version`), pnpm, Docker with compose
 - An Ethereum RPC node with `trace_block` and `debug_traceTransaction` support —
   reth or Erigon; plain geth won't work. This is the one external dependency the
-  compose stack does not provide.
+  compose stack does not provide. `scripts/tunnel.sh` manages an SSH tunnel to a
+  remote node and binds it on both loopback and the docker bridge, so containers
+  reach it as `http://host.docker.internal:<port>` (`RPC_URL_DOCKER`).
+- With a default-deny firewall (e.g. ufw), admit docker-network traffic to the
+  bridge-bound tunnel port:
+  `sudo ufw allow from 172.16.0.0/12 to 172.17.0.1 port 8545 proto tcp`
 
 ## Quick start
 

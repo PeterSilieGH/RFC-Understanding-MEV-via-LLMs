@@ -136,6 +136,20 @@ cmd_start() {
   log "Starting tunnel: $name → $actual_host:$rport → localhost:$lport"
   log "  Framework RPC URL: http://localhost:$lport"
 
+  # Also bind on the docker bridge gateway so compose containers can reach
+  # the tunnel via host.docker.internal (host-gateway maps to docker0's IP;
+  # loopback is invisible from inside a container). Bridge-only bind - no
+  # LAN exposure. Skipped when docker isn't running.
+  local -a docker_bind=()
+  local bridge_ip
+  bridge_ip="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+  if [[ -n "$bridge_ip" ]]; then
+    docker_bind=(-L "$bridge_ip:$lport:localhost:$rport")
+    log "  Container RPC URL: http://host.docker.internal:$lport (via $bridge_ip)"
+  else
+    log "  (docker bridge not found - tunnel will be loopback-only)"
+  fi
+
   # Background SSH tunnel:
   #   -N: no command execution (just port forward)
   #   -T: disable pseudo-terminal
@@ -146,7 +160,8 @@ cmd_start() {
     -o "ServerAliveCountMax=3" \
     -o "ExitOnForwardFailure=yes" \
     -o "StrictHostKeyChecking=accept-new" \
-    -L "$lport:localhost:$rport" \
+    -L "127.0.0.1:$lport:localhost:$rport" \
+    "${docker_bind[@]}" \
     "$ssh_host" \
     >> "$LOGFILE" 2>&1 &
 

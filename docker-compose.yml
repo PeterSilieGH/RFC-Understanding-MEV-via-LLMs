@@ -1,3 +1,10 @@
+# All app services run with host networking: the RPC node is typically an
+# SSH tunnel bound to the host's loopback, and default-deny host firewalls
+# (ufw) drop docker bridge->host traffic, so bridge-networked containers
+# could never reach it. In the host netns, localhost:8545 just works, web
+# frontends proxy their APIs over loopback, and ufw still shields every
+# listening port from the LAN. Postgres stays bridged; its port is published
+# on 127.0.0.1, which host-networked services reach as localhost:5432.
 services:
   postgres:
     image: postgres:16
@@ -39,15 +46,13 @@ services:
     build:
       context: .
       dockerfile: apps/explorer-api/Dockerfile
+    network_mode: host
     env_file:
       - path: .env
         required: false
     environment:
-      # inside the compose network, postgres is reachable by service name
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-    ports:
-      - "127.0.0.1:${EXPLORER_API_PORT:-3000}:3000"
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
     volumes:
       # explorer-api spawns mev-inspect-py containers on the host docker
       # daemon (ADR-002) — the one privileged edge in this deployment.
@@ -60,8 +65,10 @@ services:
     build:
       context: .
       dockerfile: apps/explorer-web/Dockerfile
-    ports:
-      - "127.0.0.1:${EXPLORER_WEB_PORT:-8080}:80"
+    network_mode: host
+    environment:
+      EXPLORER_WEB_PORT: ${EXPLORER_WEB_PORT:-8080}
+      EXPLORER_API_PORT: ${EXPLORER_API_PORT:-3000}
     depends_on:
       - explorer-api
 
@@ -69,18 +76,19 @@ services:
     build:
       context: .
       dockerfile: apps/trace-api/Dockerfile
+    network_mode: host
     env_file:
       - path: .env
         required: false
-    ports:
-      - "127.0.0.1:${TRACE_API_PORT:-2021}:2021"
 
   trace-web:
     build:
       context: .
       dockerfile: apps/trace-web/Dockerfile
-    ports:
-      - "127.0.0.1:${TRACE_WEB_PORT:-8081}:80"
+    network_mode: host
+    environment:
+      TRACE_WEB_PORT: ${TRACE_WEB_PORT:-8081}
+      TRACE_API_PORT: ${TRACE_API_PORT:-2021}
     depends_on:
       - trace-api
 

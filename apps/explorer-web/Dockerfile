@@ -8,6 +8,6 @@ RUN pnpm install --frozen-lockfile --filter @mev/explorer-web \
     && pnpm --filter @mev/explorer-web build
 
 FROM nginx:alpine
-COPY apps/explorer-web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY apps/explorer-web/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /repo/apps/explorer-web/dist /usr/share/nginx/html
-EXPOSE 80
+
