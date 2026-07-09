@@ -30,7 +30,8 @@ The platform answers: *for a given block or transaction, what MEV was extracted,
 │   ├── explorer-api/        # Express — MEV explorer API (port of mev-monitor/server.js + lib/)
 │   ├── explorer-web/        # Vite — explorer frontend (port of mev-monitor/public/)
 │   ├── trace-api/           # Express — execution-trace + contract-source API (DiscoUI-derived)
-│   ├── trace-web/           # Vite — trace/call-graph visualization (WebGL) + source viewer
+│   ├── trace-web/           # Vite — lightweight call-tree + source viewer
+│   ├── disco/               # DiscoUI clone (protocolbeat @ pinned commit) + trace panel (ADR-005)
 │   └── agent-api/           # Express — pi-harness agent sessions over traces/contracts
 ├── packages/
 │   ├── db/                  # Shared Postgres client, schema types, migrations for app-owned tables

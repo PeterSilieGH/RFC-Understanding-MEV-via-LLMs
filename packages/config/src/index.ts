@@ -13,7 +13,7 @@ const configSchema = z.object({
   POSTGRES_DB: z.string().default("mev_inspect"),
 
   EXPLORER_API_PORT: z.coerce.number().int().default(3000),
-  TRACE_API_PORT: z.coerce.number().int().default(2021),
+  TRACE_API_PORT: z.coerce.number().int().default(2022),
   AGENT_API_PORT: z.coerce.number().int().default(3100),
 
   MEV_INSPECT_IMAGE: z.string().default("mev-inspect-py:local"),

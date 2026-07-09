@@ -8,7 +8,7 @@ export default defineConfig({
     proxy: {
       // dev-only; in compose, nginx proxies /api to trace-api instead
       "/api": {
-        target: `http://localhost:${process.env.TRACE_API_PORT || 2021}`,
+        target: `http://localhost:${process.env.TRACE_API_PORT || 2022}`,
         changeOrigin: true,
       },
     },

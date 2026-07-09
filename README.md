@@ -17,7 +17,8 @@ The target architecture and the five milestones — with acceptance criteria —
 │   ├── explorer-api/   # Express — MEV explorer API (TypeScript port of mev-monitor)
 │   ├── explorer-web/   # Vite — explorer frontend
 │   ├── trace-api/      # Express — execution traces + contract sources (DiscoUI-derived)
-│   └── trace-web/      # Vite + React — call-tree & source viewer (WebGL graph in M3)
+│   ├── trace-web/      # Vite + React — lightweight call-tree & source viewer
+│   └── disco/          # DiscoUI clone (protocolbeat @ pinned commit) + trace panel
 ├── packages/
 │   ├── config/         # Unified .env loading, zod-validated (@mev/config)
 │   ├── db/             # Shared Postgres pool + app-owned tables (@mev/db)
@@ -32,8 +33,7 @@ The target architecture and the five milestones — with acceptance criteria —
 └── .env / .env.example # One unified config file for everything
 ```
 
-Planned apps (see milestones M2–M5): `trace-api`, `trace-web` (WebGL call-graph
-visualization), and `agent-api` (pi-harness agent sessions).
+Planned apps (milestone M5): `agent-api` (pi-harness agent sessions).
 
 ## Prerequisites
 
@@ -71,7 +71,9 @@ docker compose up -d
 # Explorer:  http://localhost:8080  (EXPLORER_WEB_PORT)
 # API:       http://localhost:3000  (EXPLORER_API_PORT)
 # Traces:    http://localhost:8081  (TRACE_WEB_PORT)
-# Trace API: http://localhost:2021  (TRACE_API_PORT; contract sources need ETHERSCAN_API_KEY)
+# Trace API: http://localhost:2022  (TRACE_API_PORT; contract sources need ETHERSCAN_API_KEY)
+# DiscoUI:   http://localhost:8082  (DISCO_WEB_PORT; trace panel under /ui/p/<project>)
+# Disco API: http://localhost:2021  (DISCO_API_PORT; l2b ui --readonly from the submodule)
 ```
 
 Requesting a block in the explorer triggers on-demand inspection: `explorer-api` runs the
@@ -132,7 +134,9 @@ and research reporting — not for building extraction bots that harm ordinary u
 - [x] M2 (in progress): `trace-api` + `trace-web` — call-tree graphs via
       `debug_traceTransaction`, contract sources/metadata via Etherscan;
       remaining: discovery-style relation metadata, verification against live traces
-- [ ] M3 — WebGL call-graph and execution-trace visualization
+- [x] M3 (in progress): DiscoUI cloned into `apps/disco` with a `trace` panel
+      reusing the nodes-tab graph stack (incl. its WebGL renderer); remaining:
+      trace-panel polish (details sidebar, token-flow overlay) and scale work
 - [ ] M4 — Explorer ↔ trace visualization wiring
 - [ ] M5 — Agentic AI over traces and contracts (`agent-api`)
 

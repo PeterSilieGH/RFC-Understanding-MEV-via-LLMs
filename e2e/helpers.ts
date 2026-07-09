@@ -3,7 +3,7 @@ import { execSync } from "node:child_process";
 export const EXPLORER_WEB = `http://localhost:${process.env.EXPLORER_WEB_PORT || 8080}`;
 export const EXPLORER_API = `http://localhost:${process.env.EXPLORER_API_PORT || 3000}`;
 export const TRACE_WEB = `http://localhost:${process.env.TRACE_WEB_PORT || 8081}`;
-export const TRACE_API = `http://localhost:${process.env.TRACE_API_PORT || 2021}`;
+export const TRACE_API = `http://localhost:${process.env.TRACE_API_PORT || 2022}`;
 
 export const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
 

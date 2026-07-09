@@ -13,3 +13,12 @@ export {
   type TraceGraph,
   toTraceGraph,
 } from "./graph.js";
+export {
+  GAP_X,
+  GAP_Y,
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  type NodeRect,
+  type TraceLayoutResult,
+  layoutTraceGraph,
+} from "./layout.js";

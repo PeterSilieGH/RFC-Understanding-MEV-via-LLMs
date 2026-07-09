@@ -13,7 +13,8 @@
       "**/node_modules/**",
       "pnpm-lock.yaml",
       "apps/explorer-web/public/**",
-      "apps/explorer-web/index.html"
+      "apps/explorer-web/index.html",
+      "apps/disco/**"
     ]
   },
   "formatter": {

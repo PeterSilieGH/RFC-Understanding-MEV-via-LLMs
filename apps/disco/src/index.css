@@ -1,0 +1,18 @@
+@import "./diff-editor.css";
+@import "./markdown.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #a98763 transparent;
+}
+
+:focus-visible {
+  @apply outline outline-2 outline-autumn-300;
+}
+
+::selection {
+  @apply bg-coffee-700;
+}

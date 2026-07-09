@@ -1,0 +1,45 @@
+export const EXPLORER_URLS: Record<string, string> = {
+  eth: 'https://etherscan.io/address',
+  arb1: 'https://arbiscan.io/address',
+  'arb-nova': 'https://nova.arbiscan.io/address',
+  oeth: 'https://optimistic.etherscan.io/address',
+  matic: 'https://polygonscan.com/address',
+  bnb: 'https://bscscan.com/address',
+  avax: 'https://snowtrace.io/address',
+  celo: 'https://celoscan.io/address',
+  linea: 'https://lineascan.build/address',
+  base: 'https://basescan.org/address',
+  zkevm: 'https://zkevm.polygonscan.com/address',
+  gno: 'https://gnosisscan.io/address',
+  zksync: 'https://explorer.zksync.io/address',
+  sep: 'https://sepolia.etherscan.io/address',
+  scr: 'https://scrollscan.com/address',
+  mantle: 'https://explorer.mantle.xyz/address',
+  'metis-andromeda': 'https://andromeda-explorer.metis.io/address',
+  boba: 'https://bobascan.com/address',
+  mode: 'https://modescan.io/address',
+  zora: 'https://explorer.zora.energy/address',
+  manta: 'https://pacific-explorer.manta.network/address',
+  blastmainnet: 'https://blastscan.io/address',
+  kinto: 'https://explorer.kinto.xyz/address',
+  unichain: 'https://uniscan.xyz/address',
+  hyperevm: 'https://hyperevmscan.io/address',
+  ink: 'https://explorer.inkonchain.com/address',
+  everclear: 'https://scan.everclear.org/address',
+  taiko: 'https://taikoscan.io/address',
+  gateway: 'https://gateway.explorer.zksync.io/address',
+  ethereal: 'https://explorer.ethereal.trade/address',
+  jovay: 'https://explorer.jovay.io/l2/address',
+  katana: 'https://katanascan.com',
+}
+
+export function getExplorerTxUrl(chain: string): string | undefined {
+  const base = EXPLORER_URLS[chain]
+  if (!base) {
+    return undefined
+  }
+  if (/\/address$/.test(base)) {
+    return base.replace(/\/address$/, '/tx')
+  }
+  return `${base.replace(/\/$/, '')}/tx`
+}

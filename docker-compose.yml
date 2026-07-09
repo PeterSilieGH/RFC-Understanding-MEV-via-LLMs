@@ -88,8 +88,33 @@ services:
     network_mode: host
     environment:
       TRACE_WEB_PORT: ${TRACE_WEB_PORT:-8081}
-      TRACE_API_PORT: ${TRACE_API_PORT:-2021}
+      TRACE_API_PORT: ${TRACE_API_PORT:-2022}
     depends_on:
+      - trace-api
+
+  # DiscoUI backend: l2b ui --readonly, built from the pinned l2beat
+  # submodule via its own Dockerfile (discovery project data is baked into
+  # the image). Heavy first build - the whole l2beat monorepo.
+  disco-api:
+    build:
+      context: ./l2beat
+      dockerfile: packages/l2b/Dockerfile.disco-ui
+    network_mode: host
+    environment:
+      PORT: ${DISCO_API_PORT:-2021}
+
+  # DiscoUI frontend: our protocolbeat clone with the trace panel (ADR-004/005)
+  disco-web:
+    build:
+      context: .
+      dockerfile: apps/disco/Dockerfile
+    network_mode: host
+    environment:
+      DISCO_WEB_PORT: ${DISCO_WEB_PORT:-8082}
+      DISCO_API_PORT: ${DISCO_API_PORT:-2021}
+      TRACE_API_PORT: ${TRACE_API_PORT:-2022}
+    depends_on:
+      - disco-api
       - trace-api
 
 volumes:

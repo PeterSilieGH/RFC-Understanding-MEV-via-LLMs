@@ -12,5 +12,5 @@ RUN pnpm install --frozen-lockfile --filter @mev/trace-api... \
 FROM node:22-slim
 WORKDIR /repo
 COPY --from=build /repo ./
-EXPOSE 2021
+EXPOSE 2022
 CMD ["node", "apps/trace-api/dist/server.js"]

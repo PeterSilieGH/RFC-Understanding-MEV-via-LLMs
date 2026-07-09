@@ -65,7 +65,7 @@ The MEV pipeline is **decode, then pattern-match** (see `mev-monitor/README.md` 
 
 Quirk worth knowing: mev-inspect-py's USD-summary step throws without a configured price feed; the inspector treats that failure as success when the block row exists (`mev-monitor/lib/inspector.js`).
 
-For trace visualization, the intended path (per `docs/L2BEAT.md`) is a dedicated trace API + frontend app modeled on DiscoUI's patterns — reusing `packages/discovery`'s `getDebugTrace()` call-tree shape and the protocolbeat graph-renderer concepts — rather than forcing traces into DiscoUI's static `ApiProjectResponse` model. Addresses need normalization: l2beat uses `eth:0x…` chain-specific addresses, raw traces use plain `0x…`.
+Trace visualization lives in `apps/disco` — a clone of l2beat's protocolbeat (pinned commit, vendored `@l2beat/*` shims in `src/vendor/`, deliberate edits marked `DIVERGENCE(mev)`) with an added `trace` panel that reuses the nodes-tab graph stack via a factory-ized store (ADR-005). Its backend is `l2b ui --readonly` built from the submodule (`disco-api`, port 2021); nginx routes `/api/traces` to our `trace-api` (port 2022). Keep clone edits minimal and marked — re-porting against a newer submodule pin must stay reviewable. Addresses need normalization: l2beat uses `eth:0x…` chain-specific addresses, raw traces use plain `0x…`.
 
 ## Conventions
 
