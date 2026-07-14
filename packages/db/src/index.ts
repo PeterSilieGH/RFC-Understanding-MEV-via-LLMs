@@ -44,6 +44,19 @@ export function ensureAppTables(): Promise<unknown> {
             relay TEXT
           )
         `),
+      )
+      .then(() =>
+        // mempool visibility per tx ('public'/'private', never 'unknown'):
+        // the watcher only remembers sightings for 2 minutes, so classifications
+        // are persisted here the moment a block is viewed within that window
+        pool.query(`
+          CREATE TABLE IF NOT EXISTS tx_mempool (
+            transaction_hash TEXT PRIMARY KEY,
+            block_number NUMERIC,
+            status TEXT,
+            seconds_in_mempool DOUBLE PRECISION
+          )
+        `),
       );
   }
   return appTablesReady;

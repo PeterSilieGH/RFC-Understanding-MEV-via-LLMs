@@ -15,12 +15,15 @@ export async function isInspected(blockNumber: number): Promise<boolean> {
 // so it reaches postgres via the host-published port regardless of whether
 // this process runs in compose or bare.
 function runInspectContainer(blockNumber: number): Promise<string> {
+  const containerName = `mev-inspect-block-${blockNumber}`;
   return new Promise((resolve, reject) => {
     execFile(
       "docker",
       [
         "run",
         "--rm",
+        "--name",
+        containerName,
         "--network",
         "host",
         "-e",
@@ -40,9 +43,19 @@ function runInspectContainer(blockNumber: number): Promise<string> {
         "inspect-block-command",
         String(blockNumber),
       ],
-      { timeout: 5 * 60 * 1000, maxBuffer: 32 * 1024 * 1024 },
+      { timeout: config.INSPECT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
       (error, stdout, stderr) => {
-        if (error) {
+        if (error?.killed) {
+          // the timeout only SIGTERMs the docker CLI; make sure the container
+          // itself is gone too, or it keeps hammering a degraded node
+          execFile("docker", ["rm", "-f", containerName], () => {
+            reject(
+              new Error(
+                `block inspection timed out after ${config.INSPECT_TIMEOUT_MS / 1000}s - RPC node degraded?`,
+              ),
+            );
+          });
+        } else if (error) {
           reject(new Error(`mev-inspect failed: ${stderr || error.message}`));
         } else {
           resolve(stdout);

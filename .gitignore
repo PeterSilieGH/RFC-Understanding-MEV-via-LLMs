@@ -47,3 +47,9 @@ memory.jsonl
 # untracked: all its JS is ported into apps/ and packages/, and the only
 # runtime dependency on it is building the mev-inspect-py:local docker image.
 /mev-monitor/
+
+# Playwright artifacts (root and per-app)
+test-results/
+
+# Claude Code local (per-user) settings; the shared allowlist is committed
+.claude/settings.local.json

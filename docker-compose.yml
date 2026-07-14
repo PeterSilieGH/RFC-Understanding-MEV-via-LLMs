@@ -22,6 +22,26 @@ services:
       timeout: 3s
       retries: 30
 
+  # Web UI for the shared Postgres. Host-networked like the app services, so
+  # it reaches postgres on 127.0.0.1:5432 and ufw shields its port from the
+  # LAN. Log in with PGADMIN_EMAIL/PGADMIN_PASSWORD from .env; the platform
+  # database is preregistered via servers.json (pgadmin asks for the postgres
+  # password once, then keeps it in its own volume).
+  pgadmin:
+    image: dpage/pgadmin4:9
+    network_mode: host
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@mev.dev}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_LISTEN_PORT: ${PGADMIN_PORT:-5050}
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./scripts/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Not a long-running service: builds the image explorer-api invokes per
   # block (docker run mev-inspect-py:local cli.py inspect-block-command <n>).
   # The build context lives in the gitignored local mev-monitor/ checkout —
@@ -69,6 +89,7 @@ services:
     environment:
       EXPLORER_WEB_PORT: ${EXPLORER_WEB_PORT:-8080}
       EXPLORER_API_PORT: ${EXPLORER_API_PORT:-3000}
+      DISCO_WEB_PORT: ${DISCO_WEB_PORT:-8082}
     depends_on:
       - explorer-api
 
@@ -81,27 +102,52 @@ services:
       - path: .env
         required: false
 
-  trace-web:
-    build:
-      context: .
-      dockerfile: apps/trace-web/Dockerfile
-    network_mode: host
-    environment:
-      TRACE_WEB_PORT: ${TRACE_WEB_PORT:-8081}
-      TRACE_API_PORT: ${TRACE_API_PORT:-2022}
-    depends_on:
-      - trace-api
-
-  # DiscoUI backend: l2b ui --readonly, built from the pinned l2beat
-  # submodule via its own Dockerfile (discovery project data is baked into
-  # the image). Heavy first build - the whole l2beat monorepo.
+  # DiscoUI backend: l2b ui from the pinned l2beat submodule via its own
+  # Dockerfile (heavy first build - the whole l2beat monorepo). The image's
+  # CMD bakes in --readonly; we override the command to run writable so the
+  # UI at disco-web can create projects, run `l2b discover` from the terminal
+  # panel, and read contract sources from disk (.flat). The image's own
+  # protocolbeat build is masked with an empty tmpfs, so port 2021 serves the
+  # API only - no duplicate readonly UI is hosted. Discovery projects + cache
+  # are bind-mounted from the submodule checkout (running as the host uid) so
+  # created projects persist on the host; they stay untracked there.
   disco-api:
     build:
       context: ./l2beat
       dockerfile: packages/l2b/Dockerfile.disco-ui
     network_mode: host
+    user: "${DISCO_UID:-1000}:${DISCO_GID:-1000}"
+    env_file:
+      - path: .env
+        required: false
     environment:
       PORT: ${DISCO_API_PORT:-2021}
+      HOME: /tmp
+      # the l2b shim created in command below must be on PATH for the
+      # terminal endpoints, which spawn `l2b discover ...` via a shell
+      PATH: /tmp/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # discovery reads *_FOR_DISCOVERY vars, falling back to plain
+      # ETHERSCAN_API_KEY (supplied by env_file from the root .env)
+      ETHEREUM_RPC_URL_FOR_DISCOVERY: ${RPC_URL}
+      # bound the sockets discovery may hold open: the shared RPC node caps
+      # concurrent connections and unbounded `l2b discover` runs starve every
+      # other service. Inherited by spawned l2b children.
+      NODE_OPTIONS: --require /app/limit-rpc-sockets.cjs
+      RPC_MAX_SOCKETS: ${RPC_MAX_SOCKETS:-1000}
+    volumes:
+      - ./l2beat/packages/config/src/projects:/app/packages/config/src/projects
+      - ./l2beat/packages/config/cache:/app/packages/config/cache
+      - ./scripts/limit-rpc-sockets.cjs:/app/limit-rpc-sockets.cjs:ro
+    tmpfs:
+      - /app/packages/protocolbeat/build
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /tmp/bin
+        printf '#!/bin/sh\nexec node /app/packages/l2b/dist/cli.js "$$@"\n' > /tmp/bin/l2b
+        chmod +x /tmp/bin/l2b
+        exec node packages/l2b/dist/cli.js ui
 
   # DiscoUI frontend: our protocolbeat clone with the trace panel (ADR-004/005)
   disco-web:
@@ -113,12 +159,20 @@ services:
       DISCO_WEB_PORT: ${DISCO_WEB_PORT:-8082}
       DISCO_API_PORT: ${DISCO_API_PORT:-2021}
       TRACE_API_PORT: ${TRACE_API_PORT:-2022}
+      EXPLORER_API_PORT: ${EXPLORER_API_PORT:-3000}
     depends_on:
       - disco-api
       - trace-api
+      - explorer-api
 
 volumes:
   mev_inspect_pgdata:
     # Set POSTGRES_VOLUME to reuse an existing data volume (e.g. the one the
     # reference mev-monitor stack created: mev-monitor_mev_inspect_pgdata).
+    # external: the volume is managed outside this project, so `docker compose
+    # down -v` can never delete inspected-block data. Create it once on a
+    # fresh host: docker volume create mev_inspect_pgdata
     name: ${POSTGRES_VOLUME:-mev_inspect_pgdata}
+    external: true
+  # pgadmin's own state (saved connections, preferences) — droppable
+  pgadmin_data:

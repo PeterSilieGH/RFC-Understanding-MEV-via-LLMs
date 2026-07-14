@@ -23,11 +23,10 @@ const addressSearchBtn = document.getElementById("addressSearchBtn");
 const addressResultsEl = document.getElementById("addressResults");
 const leaderboardResultsEl = document.getElementById("leaderboardResults");
 const heatmapResultsEl = document.getElementById("heatmapResults");
-const builderResultsEl = document.getElementById("builderResultsTop");
-const relayResultsEl = document.getElementById("relayResultsTop");
+const builderResultsEl = document.getElementById("builderResults");
+const relayResultsEl = document.getElementById("relayResults");
 const topSearchersResultsEl = document.getElementById("topSearchersResults");
-const builderStatsToggle = document.getElementById("builderStatsToggle");
-const builderStatsBody = document.getElementById("builderStatsBody");
+const mempoolStatsResultsEl = document.getElementById("mempoolStatsResults");
 
 const MEV_INFO = {
   arbitrage: {
@@ -609,6 +608,15 @@ function txLink(hash) {
   return `<a class="addr mono" href="https://etherscan.io/tx/${hash}" target="_blank" rel="noopener">${shortHash(hash)}</a>`;
 }
 
+// Deep link into the DiscoUI trace view (apps/disco), which renders the
+// transaction's execution trace annotated with the MEV facts shown here.
+// The port comes from /env.js (nginx-injected) with the compose default.
+function traceLink(hash) {
+  const port = (window.__ENV && window.__ENV.discoWebPort) || 8082;
+  const url = `http://${window.location.hostname}:${port}/ui/trace/${hash}`;
+  return `<a class="trace-link" href="${url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="Open the execution trace in DiscoUI">trace</a>`;
+}
+
 function profitSpan(amount) {
   const isLoss = amount.value < 0;
   return `<span class="${isLoss ? "loss" : "profit"}">${fmtAmount(amount)}</span>`;
@@ -685,7 +693,7 @@ function renderTable() {
 
       return `
         <tr class="${tx.mev.length ? "has-mev" : ""} ${isExpanded ? "expanded" : ""}" data-tx="${tx.hash}" data-has-detail="${hasDetail}">
-          <td class="mono">${hasDetail ? '<span class="expand-arrow">▶</span>' : ""}<a class="addr" href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${shortHash(tx.hash)}</a></td>
+          <td class="mono">${hasDetail ? '<span class="expand-arrow">▶</span>' : ""}<a class="addr" href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${shortHash(tx.hash)}</a> ${traceLink(tx.hash)}</td>
           <td class="mono">${addrLink(tx.from)}</td>
           <td class="mono">${addrLink(tx.to)}</td>
           <td class="mono">${tx.gasUsed ?? "–"}</td>
@@ -733,7 +741,17 @@ async function loadBlock(blockNumber, { silent = false } = {}) {
 
   try {
     const res = await fetch(`/api/block/${blockNumber}`);
-    const data = await res.json();
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      // a proxy timeout answers with an HTML error page, not JSON
+      throw new Error(
+        res.status === 504
+          ? "Block inspection timed out — is the RPC node healthy?"
+          : `Unexpected ${res.status} response from the API`
+      );
+    }
     if (!res.ok) throw new Error(data.error || "Failed to load block");
 
     state.blockNumber = data.blockNumber;
@@ -751,7 +769,6 @@ async function loadBlock(blockNumber, { silent = false } = {}) {
     renderStats(state.transactions, state.bid);
     renderTable();
     renderTicker();
-    loadBuilderStats();
 
     showToast(
       data.alreadyInspected
@@ -1120,10 +1137,137 @@ async function loadBuilderStats() {
   }
 }
 
-builderStatsToggle.addEventListener("click", () => {
-  builderStatsBody.classList.toggle("collapsed");
-  builderStatsToggle.classList.toggle("collapsed");
-});
+// ---- Mempool statistics tab (public vs private order flow) ----
+
+const MP_MAX_CHART_BLOCKS = 60;
+
+function mpTrackedCount(b) {
+  return b.publicCount + b.privateCount;
+}
+
+// The private premium: how much more private order flow paid per gas than
+// public flow (in %), for one block or for the overall summary.
+function mpPrivatePremiumPct(stat) {
+  if (stat.avgTipPublicGwei == null || stat.avgTipPublicGwei <= 0) return null;
+  if (stat.avgTipPrivateGwei == null) return null;
+  return ((stat.avgTipPrivateGwei - stat.avgTipPublicGwei) / stat.avgTipPublicGwei) * 100;
+}
+
+function fmtPct(v) {
+  return `${v >= 0 ? "+" : ""}${v.toFixed(0)}%`;
+}
+
+// Stacked 100%-share bars, one per block: green = public, red = private.
+// Clicking a bar loads that block in the inspection view above.
+function mempoolShareChartSvg(blocks) {
+  const slot = 14;
+  const barWidth = 10;
+  const chartHeight = 120;
+  const labelHeight = 14;
+  const width = blocks.length * slot;
+
+  const bars = blocks
+    .map((b, i) => {
+      const tracked = mpTrackedCount(b);
+      if (tracked === 0) return "";
+      const privateHeight = (b.privateCount / tracked) * chartHeight;
+      const x = i * slot;
+      const premium = mpPrivatePremiumPct(b);
+      const title = [
+        `#${b.blockNumber} — ${b.builder || "unknown builder"}`,
+        `${b.publicCount} public / ${b.privateCount} private (${((b.privateCount / tracked) * 100).toFixed(0)}% private)`,
+        premium != null ? `private premium: ${fmtPct(premium)} gwei/gas vs public` : null,
+        `click to inspect this block`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return `<g class="mp-bar" data-block="${b.blockNumber}"><title>${title}</title>
+        <rect x="${x}" y="0" width="${barWidth}" height="${privateHeight.toFixed(1)}" fill="var(--red)"></rect>
+        <rect x="${x}" y="${privateHeight.toFixed(1)}" width="${barWidth}" height="${(chartHeight - privateHeight).toFixed(1)}" fill="var(--green)"></rect>
+      </g>`;
+    })
+    .join("");
+
+  const first = blocks[0].blockNumber;
+  const last = blocks[blocks.length - 1].blockNumber;
+  const labels = `
+    <text x="0" y="${chartHeight + 11}" fill="var(--muted)" font-size="9">#${first}</text>
+    ${blocks.length > 1 ? `<text x="${width - barWidth}" y="${chartHeight + 11}" fill="var(--muted)" font-size="9" text-anchor="end">#${last}</text>` : ""}
+  `;
+
+  return `<svg viewBox="0 0 ${width} ${chartHeight + labelHeight}" preserveAspectRatio="none" style="max-width:${width * 2}px">${bars}${labels}</svg>`;
+}
+
+function renderMempoolStats(data) {
+  const blocks = (data.blocks || []).filter((b) => mpTrackedCount(b) > 0).slice(-MP_MAX_CHART_BLOCKS);
+  const summary = data.summary || {};
+  const tracked = (summary.publicCount || 0) + (summary.privateCount || 0);
+
+  if (tracked === 0 || blocks.length === 0) {
+    mempoolStatsResultsEl.innerHTML = `<div class="empty-state">No mempool sightings recorded yet. Classifications only happen for blocks viewed live (within the watcher's 2-minute window) — leave "Follow latest block" on for a while with a healthy RPC node and this fills up.</div>`;
+    return;
+  }
+
+  const privateSharePct = (summary.privateCount / tracked) * 100;
+  const fmtGwei = (v) => (v != null ? `${v.toFixed(2)} gwei` : "n/a");
+  const premiumPct = mpPrivatePremiumPct(summary);
+
+  const cards = [
+    { value: tracked, label: "classified transactions" },
+    { value: `${privateSharePct.toFixed(1)}%`, label: `private share (${summary.privateCount} of ${tracked})` },
+    { value: fmtGwei(summary.avgTipPublicGwei), label: "avg price per gas — public" },
+    { value: fmtGwei(summary.avgTipPrivateGwei), label: "avg price per gas — private" },
+  ];
+  if (premiumPct != null) {
+    cards.push({
+      value: fmtPct(premiumPct),
+      label: "private premium vs public",
+      cls: premiumPct >= 0 ? "profit" : "loss",
+    });
+  }
+
+  const summaryHtml = cards
+    .map(
+      (c) => `
+      <div class="mp-summary-card">
+        <div class="mp-summary-value ${c.cls || ""}">${c.value}</div>
+        <div class="mp-summary-label">${c.label}</div>
+      </div>`,
+    )
+    .join("");
+
+  const legendHtml = `
+    <div class="mp-chart-legend">
+      <span><span class="legend-swatch" style="background:var(--green)"></span> public</span>
+      <span><span class="legend-swatch" style="background:var(--red)"></span> private</span>
+    </div>`;
+
+  mempoolStatsResultsEl.innerHTML = `
+    <div class="mp-summary">${summaryHtml}</div>
+    ${legendHtml}
+    <div class="mp-chart-title">Order-flow share per block (${blocks.length} most recent classified blocks — click a bar to inspect that block)</div>
+    <div class="mp-chart">${mempoolShareChartSvg(blocks)}</div>
+  `;
+
+  mempoolStatsResultsEl.querySelectorAll(".mp-bar").forEach((el) => {
+    el.addEventListener("click", () => {
+      loadBlock(Number(el.dataset.block));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  });
+}
+
+async function loadMempoolStats() {
+  mempoolStatsResultsEl.innerHTML = `<div class="empty-state">Loading…</div>`;
+  try {
+    const res = await fetch("/api/mempool-stats");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "failed");
+    renderMempoolStats(data);
+  } catch {
+    mempoolStatsResultsEl.innerHTML = `<div class="empty-state">Failed to load mempool statistics.</div>`;
+  }
+}
 
 const loadedTabs = new Set();
 document.querySelectorAll(".explore-tab").forEach((tab) => {
@@ -1133,10 +1277,17 @@ document.querySelectorAll(".explore-tab").forEach((tab) => {
     tab.classList.add("active");
     document.getElementById(`panel-${tab.dataset.tab}`).classList.remove("hidden");
 
+    // mempool stats grow with every live block, so refresh on every visit;
+    // the other tabs load once per session
+    if (tab.dataset.tab === "mempool") {
+      loadMempoolStats();
+      return;
+    }
     if (!loadedTabs.has(tab.dataset.tab)) {
       loadedTabs.add(tab.dataset.tab);
       if (tab.dataset.tab === "leaderboard") loadLeaderboard();
       if (tab.dataset.tab === "heatmap") loadHeatmap();
+      if (tab.dataset.tab === "builders") loadBuilderStats();
     }
   });
 });
@@ -1168,6 +1319,13 @@ buildLegend();
 pollRpcStatus();
 liveTimer = setInterval(pollRpcStatus, 12000);
 
-fetchLatestBlockNumber()
-  .then((latest) => loadBlock(latest))
-  .catch(() => showToast("Could not reach the RPC node.", "error"));
+// ?block=N deep links (e.g. from the trace view's "inspect this block" hint)
+const initialBlockParam = Number(new URLSearchParams(window.location.search).get("block"));
+if (Number.isInteger(initialBlockParam) && initialBlockParam > 0) {
+  blockInput.value = String(initialBlockParam);
+  loadBlock(initialBlockParam);
+} else {
+  fetchLatestBlockNumber()
+    .then((latest) => loadBlock(latest))
+    .catch(() => showToast("Could not reach the RPC node.", "error"));
+}

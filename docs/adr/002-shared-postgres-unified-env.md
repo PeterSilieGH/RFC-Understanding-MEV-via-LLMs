@@ -12,7 +12,7 @@ mev-inspect-py writes its schema (`classified_traces`, `swaps`, `arbitrages`, �
 
 - **One Postgres 16 container** (`postgres` service, named volume) hosts a single database. mev-inspect-py's Alembic migrations own its tables; each app owns its additional tables via migrations in `packages/db`. App code never writes to mev-inspect-py tables (read-only pattern-matching, per the reference design).
 - **One root `.env`** is the single configuration source: RPC URLs, Postgres credentials, service ports, external API keys (CoinGecko, Anthropic, Etherscan, relays). `packages/config` loads and validates it with zod; every app and the compose file consume the same variables. `.env.example` lists every variable with a comment and safe default, and is updated in the same commit as any new variable.
-- **`docker-compose.yml` at the repo root** defines: `postgres`, `explorer-api`, `explorer-web`, `trace-api`, `trace-web`, `agent-api`, plus a build of the `mev-inspect-py:local` image (used for one-off per-block runs, not a long-running service). The external RPC node is deliberately *not* a compose service — it is referenced via `RPC_URL`.
+- **`docker-compose.yml` at the repo root** defines: `postgres`, `explorer-api`, `explorer-web`, `trace-api`, `disco-api`, `disco-web`, `agent-api`, plus a build of the `mev-inspect-py:local` image (used for one-off per-block runs, not a long-running service). The external RPC node is deliberately *not* a compose service — it is referenced via `RPC_URL`. *(`trace-web` was part of the stack until 2026-07-09; the DiscoUI trace panel replaced it, see ADR-005.)*
 
 ## Consequences
 

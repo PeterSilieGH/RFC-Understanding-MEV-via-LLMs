@@ -17,6 +17,8 @@ const configSchema = z.object({
   AGENT_API_PORT: z.coerce.number().int().default(3100),
 
   MEV_INSPECT_IMAGE: z.string().default("mev-inspect-py:local"),
+  // A hanging RPC node leaves inspect containers running forever otherwise
+  INSPECT_TIMEOUT_MS: z.coerce.number().int().default(5 * 60 * 1000),
 
   ANTHROPIC_API_KEY: z.string().optional(),
   ETHERSCAN_API_KEY: z.string().optional(),

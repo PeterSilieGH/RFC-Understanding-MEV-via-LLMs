@@ -4,6 +4,7 @@ import { getLiquidationRacesForBlock } from "./detectors/liquidationRace.js";
 import { getLiquidationSandwichesForBlock } from "./detectors/liquidationSandwich.js";
 import { getNftFlipsForBlock } from "./detectors/nftFlip.js";
 import { getNonAtomicArbitrageForBlock } from "./detectors/nonAtomicArbitrage.js";
+import { recordMempoolClassifications } from "./mempoolStats.js";
 import * as mempoolWatcher from "./mempoolWatcher.js";
 import { type FormattedAmount, formatAmount, getTokenInfo } from "./tokens.js";
 
@@ -18,6 +19,10 @@ export interface MevEntry {
 export interface BlockSwap {
   protocol: string | null;
   contractAddress: string;
+  // mev-inspect-py trace path of the swap call, e.g. [0,1,2] - joins onto
+  // trace-graph node ids ("0.1.2"), which is how the trace view locates the
+  // pool call for a swap (M4 enrichment).
+  traceAddress: number[];
   tokenInAddress: string | null;
   tokenInAmountRaw: string | null;
   tokenOutAddress: string | null;
@@ -99,7 +104,7 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
       [blockNumber],
     ),
     pool.query(
-      `SELECT transaction_hash, protocol, contract_address,
+      `SELECT transaction_hash, protocol, contract_address, trace_address,
               token_in_address, token_in_amount, token_out_address,
               token_out_amount, error
        FROM swaps WHERE block_number = $1`,
@@ -153,6 +158,7 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
     entry(row.transaction_hash).swaps.push({
       protocol: row.protocol,
       contractAddress: row.contract_address,
+      traceAddress: (row.trace_address ?? []).map(Number),
       tokenInAddress: row.token_in_address,
       tokenInAmountRaw: row.token_in_amount,
       tokenOutAddress: row.token_out_address,
@@ -392,6 +398,10 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
       }
     }),
   );
+
+  // fire-and-forget: persisting mempool sightings must never slow or fail a
+  // block view (the watcher forgets them after 2 minutes, this doesn't)
+  void recordMempoolClassifications(blockNumber, txs).catch(() => {});
 
   return txs;
 }

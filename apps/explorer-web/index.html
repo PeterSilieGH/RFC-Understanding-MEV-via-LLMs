@@ -51,24 +51,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <section id="builderStatsTop" class="builder-stats-top">
-    <h2 id="builderStatsToggle" class="collapsible-header">
-      <span class="chevron">▾</span> Builder share <span class="hint">(across every block inspected so far)</span>
-    </h2>
-    <div id="builderStatsBody" class="builder-stats-body">
-      <div class="builder-relay-row">
-        <div class="builder-relay-col">
-          <h3>By builder</h3>
-          <div id="builderResultsTop"></div>
-        </div>
-        <div class="builder-relay-col">
-          <h3>By relay <span class="hint">(blocks viewed so far with a known winning bid)</span></h3>
-          <div id="relayResultsTop"></div>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <section id="legend" class="legend hidden"></section>
 
   <section id="ticker" class="ticker"></section>
@@ -90,6 +72,8 @@
       <button class="explore-tab active" data-tab="address">Address lookup</button>
       <button class="explore-tab" data-tab="leaderboard">Leaderboard</button>
       <button class="explore-tab" data-tab="heatmap">Sandwiched pools</button>
+      <button class="explore-tab" data-tab="builders">Builder &amp; relay share</button>
+      <button class="explore-tab" data-tab="mempool">Mempool stats</button>
     </div>
 
     <div class="explore-panel" id="panel-address">
@@ -112,8 +96,29 @@
       <p class="explore-hint">Liquidity pools that show up most often as the target of a sandwich attack, across all inspected blocks.</p>
       <div id="heatmapResults"></div>
     </div>
+
+    <div class="explore-panel hidden" id="panel-builders">
+      <p class="explore-hint">Who built the blocks inspected so far (decoded from each block's extraData graffiti), and which MEV-Boost relay delivered the winning bid where one is known.</p>
+      <div class="builder-relay-row">
+        <div class="builder-relay-col">
+          <h3>By builder</h3>
+          <div id="builderResults"></div>
+        </div>
+        <div class="builder-relay-col">
+          <h3>By relay <span class="hint">(blocks viewed so far with a known winning bid)</span></h3>
+          <div id="relayResults"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="explore-panel hidden" id="panel-mempool">
+      <p class="explore-hint">Public vs private order flow across inspected blocks. A transaction counts as <em>public</em> if our node saw it pending before inclusion and <em>private</em> if it never appeared while we were watching. Classifications are only possible for blocks viewed live (the watcher keeps a 2-minute window), but once made they are stored permanently. Tips are the effective builder payment per gas: priority fee plus any direct coinbase transfer, spread over the transaction's gas.</p>
+      <div id="mempoolStatsResults"></div>
+    </div>
   </section>
 
+  <!-- deployment config injected by nginx (ports of sibling UIs); optional -->
+  <script src="/env.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -9,9 +9,24 @@ server {
   location /api/ {
     proxy_pass http://127.0.0.1:${EXPLORER_API_PORT};
     proxy_set_header Host $host;
+    # on-demand block inspection legitimately takes minutes; outlive the
+    # API's own inspection timeout (INSPECT_TIMEOUT_MS, default 5 min) so
+    # its JSON error reaches the browser instead of nginx's HTML 504 page
+    proxy_read_timeout 360s;
+  }
+
+  # deployment config for the frontend: where the sibling DiscoUI lives
+  # (app.js builds trace deep links from it, defaulting to 8082)
+  location = /env.js {
+    default_type application/javascript;
+    return 200 'window.__ENV = { discoWebPort: ${DISCO_WEB_PORT} };';
   }
 
   location / {
+    # assets ship un-versioned, so force revalidation (cheap ETag 304s):
+    # heuristic caching otherwise lets a browser pair a stale app.js with a
+    # newer index.html after a rebuild, which crashes the page on startup
+    add_header Cache-Control "no-cache";
     try_files $uri $uri/ /index.html;
   }
 }

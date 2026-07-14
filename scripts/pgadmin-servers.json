@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "mev_inspect (shared platform Postgres)",
+      "Group": "Servers",
+      "Host": "127.0.0.1",
+      "Port": 5432,
+      "MaintenanceDB": "mev_inspect",
+      "Username": "postgres",
+      "SSLMode": "prefer"
+    }
+  }
+}

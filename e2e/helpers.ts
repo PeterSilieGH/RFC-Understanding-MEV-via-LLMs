@@ -2,22 +2,38 @@ import { execSync } from "node:child_process";
 
 export const EXPLORER_WEB = `http://localhost:${process.env.EXPLORER_WEB_PORT || 8080}`;
 export const EXPLORER_API = `http://localhost:${process.env.EXPLORER_API_PORT || 3000}`;
-export const TRACE_WEB = `http://localhost:${process.env.TRACE_WEB_PORT || 8081}`;
 export const TRACE_API = `http://localhost:${process.env.TRACE_API_PORT || 2022}`;
 
 export const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
 
-/** Highest block already inspected into the shared postgres, or null. */
-export function latestInspectedBlock(): number | null {
+function psql(query: string): string | null {
   try {
     const out = execSync(
-      'docker compose exec -T postgres psql -U postgres -d mev_inspect -tAc "SELECT block_number FROM blocks ORDER BY block_number DESC LIMIT 1"',
+      `docker compose exec -T postgres psql -U postgres -d mev_inspect -tAc "${query}"`,
       { encoding: "utf8" },
     ).trim();
-    return out ? Number(out) : null;
+    return out || null;
   } catch {
     return null;
   }
+}
+
+/** Highest block already inspected into the shared postgres, or null. */
+export function latestInspectedBlock(): number | null {
+  const out = psql("SELECT block_number FROM blocks ORDER BY block_number DESC LIMIT 1");
+  return out ? Number(out) : null;
+}
+
+/** An inspected transaction that contains at least one decoded swap, or null. */
+export function anySwapTxHash(): string | null {
+  return psql("SELECT transaction_hash FROM swaps ORDER BY block_number DESC LIMIT 1");
+}
+
+/** The front-run leg of an inspected sandwich, or null. */
+export function anySandwichFrontrunTxHash(): string | null {
+  return psql(
+    "SELECT frontrun_swap_transaction_hash FROM sandwiches ORDER BY block_number DESC LIMIT 1",
+  );
 }
 
 /**

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { EXPLORER_API, EXPLORER_WEB, latestInspectedBlock } from "./helpers.js";
+import { EXPLORER_API, EXPLORER_WEB, anySwapTxHash, latestInspectedBlock } from "./helpers.js";
 
 test.describe("explorer-api", () => {
   test("mempool status responds", async ({ request }) => {
@@ -8,6 +8,15 @@ test.describe("explorer-api", () => {
     const body = await res.json();
     expect(body).toHaveProperty("trackedHashes");
     expect(body).toHaveProperty("healthy");
+  });
+
+  test("mempool stats respond", async ({ request }) => {
+    const res = await request.get(`${EXPLORER_API}/api/mempool-stats`);
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(Array.isArray(body.blocks)).toBe(true);
+    expect(body.summary).toHaveProperty("publicCount");
+    expect(body.summary).toHaveProperty("privateCount");
   });
 
   test("leaderboard aggregates from the shared postgres", async ({ request }) => {
@@ -45,6 +54,25 @@ test.describe("explorer-api", () => {
       expect(tx).toHaveProperty("mev");
     }
   });
+
+  test("rejects an invalid tx hash on the per-tx MEV endpoint", async ({ request }) => {
+    const res = await request.get(`${EXPLORER_API}/api/mev/tx/0x1234`);
+    expect(res.status()).toBe(400);
+  });
+
+  test("serves per-tx MEV facts with trace addresses (M4)", async ({ request }) => {
+    const txHash = anySwapTxHash();
+    test.skip(txHash === null, "no decoded swaps in the shared postgres");
+
+    const res = await request.get(`${EXPLORER_API}/api/mev/tx/${txHash}`);
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(body.inspected).toBe(true);
+    expect(body.transaction.hash).toBe(txHash);
+    expect(Array.isArray(body.transaction.mev)).toBe(true);
+    expect(body.transaction.swaps.length).toBeGreaterThan(0);
+    expect(Array.isArray(body.transaction.swaps[0].traceAddress)).toBe(true);
+  });
 });
 
 test.describe("explorer-web", () => {
@@ -75,5 +103,10 @@ test.describe("explorer-web", () => {
     await blockResponse;
 
     await expect(page.locator("body")).toContainText(String(block));
+
+    // every transaction row deep-links into the DiscoUI trace view (M4)
+    const traceLink = page.locator("a.trace-link").first();
+    await expect(traceLink).toBeVisible();
+    await expect(traceLink).toHaveAttribute("href", /:8082\/ui\/trace\/0x[0-9a-f]{64}$/);
   });
 });
