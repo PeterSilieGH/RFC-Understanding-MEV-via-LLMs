@@ -30,7 +30,7 @@ The platform answers: *for a given block or transaction, what MEV was extracted,
 │   ├── explorer-api/        # Express — MEV explorer API (port of mev-monitor/server.js + lib/)
 │   ├── explorer-web/        # Vite — explorer frontend (port of mev-monitor/public/)
 │   ├── trace-api/           # Express — execution-trace + contract-source API (DiscoUI-derived)
-│   ├── trace-web/           # Vite — lightweight call-tree + source viewer
+│   ├── trace-web/           # Vite — standalone viewer (M2 deliverable; retired from compose, ADR-005)
 │   ├── disco/               # DiscoUI clone (protocolbeat @ pinned commit) + trace panel (ADR-005)
 │   └── agent-api/           # Express — pi-harness agent sessions over traces/contracts
 ├── packages/
@@ -70,7 +70,8 @@ The platform answers: *for a given block or transaction, what MEV was extracted,
         explorer-api                trace-api             agent-api
               │                          │                (pi harness)
               ▼                          ▼                    │
-        explorer-web  ── links tx ──▶ trace-web  ◀── annotates ┘
+        explorer-web ── /ui/trace/:tx ─▶ disco (trace  ◀── annotates ┘
+                                         panel + disco-api)
 ```
 
 Two principles carried over from the reference implementations:
@@ -80,11 +81,16 @@ Two principles carried over from the reference implementations:
 
 ## Milestones
 
+Progress (2026-07-14): **M1–M4 complete and e2e-verified** (25/25 passing
+against the live stack). Next up: M4.5 (trace workspace, ADR-008), then M5.
+
 ### M1 — Port the MEV Block Explorer to the platform stack
 
 Extract the capabilities of `mev-monitor/` (Express API, five extra detectors, mempool watcher, builder/relay identification, EUR pricing, static frontend) into `apps/explorer-api` + `apps/explorer-web`, TypeScript, running as containers against the shared Postgres.
 
 **Done when:** `docker compose up` serves the explorer; requesting a block triggers on-demand inspection; all detector classes from `mev-monitor/README.md` render; behavior verified against the reference implementation on the same block.
+
+*Status: done ([ADR-003](adr/003-port-mev-monitor.md)).*
 
 ### M2 — Extract DiscoUI capabilities from l2beat
 
@@ -92,17 +98,29 @@ Stand up `apps/trace-api` exposing contract sources, discovery metadata, and `de
 
 **Done when:** for an address in an inspected block, the UI shows contract sources and metadata; for a tx hash, the API returns a normalized call-tree JSON (`eth:0x…` vs `0x…` address forms reconciled).
 
+*Status: done. `apps/trace-web` was the M2 viewer; it was later retired from the compose stack in favor of the DiscoUI trace panel (ADR-005).*
+
 ### M3 — WebGL call-graph and execution-trace visualization
 
 Add a WebGL-based graph renderer to `apps/trace-web` for transaction call trees (calls, delegatecalls, creates, logs, token flows), with a trace-specific graph model in `packages/trace-graph` — not a retrofit of DiscoUI's static `ApiProjectResponse` ([ADR-005](adr/005-webgl-trace-visualization.md)). Must handle large MEV transactions (pruning, clustering, lazy expansion).
 
 **Done when:** a known arbitrage/sandwich tx renders as an interactive graph at 60fps for traces with thousands of calls; nodes link to contract sources from M2.
 
+*Status: done, via a pivot: instead of a hand-rolled renderer in `trace-web`, the trace graph is a panel in a cloned DiscoUI (`apps/disco`) reusing its nodes-tab store and WebGL renderer (ADR-005, superseded-in-part).*
+
 ### M4 — Wire the explorer to the trace visualization
 
 Every transaction in the explorer links to its execution trace view; trace nodes are enriched with explorer knowledge (MEV labels, token transfers, decoded swaps from Postgres) and discovery metadata (contract names, proxy implementations).
 
 **Done when:** clicking a sandwich transaction in the explorer opens its trace with front-run/victim/back-run legs and the involved pool contracts visually annotated, and each contract's source is one click away.
+
+*Status: done 2026-07-09 ([ADR-007](adr/007-trace-mev-enrichment.md)), acceptance verified by e2e 2026-07-14. Along the way the explorer also gained mempool-visibility persistence and statistics (public/private share + effective tip), pgAdmin, and RPC-degradation hardening (inspection timeouts, socket bounds).*
+
+### M4.5 — Trace workspace: ported DiscoUI panel tabs ([ADR-008](adr/008-trace-workspace-panels.md))
+
+The standalone trace view grows into a full DiscoUI workspace: List (incident-shaped folders) as entry point, discovery-named Nodes, stock Values/Code/Preview panels working against a synthetic per-incident discovery project, trace-scoped top/bottom bars, and a disabled Analyze tab reserved as M5's UI surface. Work package: [docs/design/wp-trace-workspace.md](design/wp-trace-workspace.md).
+
+**Done when:** opening a sandwich deep link shows all legs' traces in List folders (Initial + one per leg); selecting a call in List or Nodes shows that contract's discovered fields (Values), verified sources (Code), and permissions dossier (Preview); the first open triggers exactly one bounded discovery run, subsequent opens are served from disk.
 
 ### M5 — Agentic AI over traces and contracts
 
