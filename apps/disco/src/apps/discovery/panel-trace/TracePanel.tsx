@@ -2,6 +2,9 @@
 // with the exact machinery of the nodes panel - same store shape (own
 // instance via NodesStoreProvider), same Viewport/Controls, so selection,
 // dragging, hiding, coloring, undo/redo, and stored layouts all just work.
+// M4: nodes are overlaid with the explorer's MEV facts (decoded swaps turn
+// orange), a strip above the graph shows the transaction's MEV role with
+// jumps to related legs, and a details sidebar links contract sources.
 import {
   isTxHash,
   layoutTraceGraph,
@@ -10,46 +13,68 @@ import {
 } from '@mev/trace-graph'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { getTraceGraph } from '../../../api/traces'
+import { getTraceGraph, getTxMev, type TxMev, type TxSwap } from '../../../api/traces'
 import { LoadingState } from '../../../components/LoadingState'
 import { Controls } from '../panel-nodes/controls/Controls'
 import type { Field, Node } from '../panel-nodes/store/State'
 import { NodesStoreProvider, traceNodesStore } from '../panel-nodes/store/store'
 import { NODE_WIDTH } from '../panel-nodes/store/utils/constants'
 import { Viewport } from '../panel-nodes/view/Viewport'
+import { TraceMevStrip } from './TraceMevStrip'
+import { TraceNodeDetails } from './TraceNodeDetails'
 
 const TREE_GAP_X = 120
 const TREE_GAP_Y = 24
 
 // 1-based indexes into SELECTABLE_COLORS (view/colors/colors.ts)
 const COLOR_RED = 1
+const COLOR_ORANGE = 2
 const COLOR_GREEN = 5
 const COLOR_BLUE = 7
 const COLOR_PURPLE = 8
 
-export function TracePanel() {
-  const [input, setInput] = useState('')
+export function TracePanel(props: { initialTxHash?: string }) {
+  const [input, setInput] = useState(props.initialTxHash ?? '')
   const [inputError, setInputError] = useState<string>()
-  const [txHash, setTxHash] = useState<string>()
+  const [txHash, setTxHash] = useState<string>(() =>
+    props.initialTxHash && isTxHash(props.initialTxHash.toLowerCase())
+      ? props.initialTxHash.toLowerCase()
+      : '',
+  )
 
   const response = useQuery({
     queryKey: ['traces', txHash],
-    queryFn: () => getTraceGraph(txHash ?? ''),
-    enabled: txHash !== undefined,
+    queryFn: () => getTraceGraph(txHash),
+    enabled: txHash !== '',
     staleTime: Number.POSITIVE_INFINITY,
   })
 
-  useLoadTraceNodes(response.data)
+  const mevResponse = useQuery({
+    queryKey: ['mev-tx', txHash],
+    queryFn: () => getTxMev(txHash),
+    enabled: txHash !== '',
+    // an uninspected block can get inspected later - allow refetching
+    staleTime: 30_000,
+    retry: 1,
+  })
 
-  function onSubmit(event: React.FormEvent) {
-    event.preventDefault()
-    const value = input.trim().toLowerCase()
-    if (!isTxHash(value)) {
+  const swapsByNodeId = swapsForTx(mevResponse.data, txHash)
+  useLoadTraceNodes(response.data, swapsByNodeId)
+
+  function openTx(value: string) {
+    const hash = value.trim().toLowerCase()
+    if (!isTxHash(hash)) {
       setInputError('Not a transaction hash (0x…, 32 bytes)')
       return
     }
     setInputError(undefined)
-    setTxHash(value)
+    setInput(hash)
+    setTxHash(hash)
+  }
+
+  function onSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    openTx(input)
   }
 
   return (
@@ -79,13 +104,21 @@ export function TracePanel() {
             {(response.error as Error).message}
           </p>
         )}
+        {txHash !== '' && (
+          <TraceMevStrip
+            mev={mevResponse.data}
+            isLoading={mevResponse.isLoading}
+            onOpenTx={openTx}
+          />
+        )}
         <div className="relative min-h-0 w-full flex-1">
-          {response.isLoading && txHash !== undefined ? (
+          {response.isLoading && txHash !== '' ? (
             <LoadingState />
           ) : (
             <>
               <Viewport />
               <Controls />
+              <TraceNodeDetails swapsByNodeId={swapsByNodeId} />
             </>
           )}
         </div>
@@ -94,14 +127,35 @@ export function TracePanel() {
   )
 }
 
-function useLoadTraceNodes(data: TraceGraph | undefined) {
+/** Decoded swaps of the traced tx, keyed by trace-graph node id. */
+function swapsForTx(mev: TxMev | undefined, txHash: string): Map<string, TxSwap> {
+  const byNodeId = new Map<string, TxSwap>()
+  if (!mev?.transaction || mev.transaction.hash !== txHash) {
+    return byNodeId
+  }
+  for (const swap of mev.transaction.swaps) {
+    // mev-inspect trace_address [] is the top frame; [0,1] -> node "0.1"
+    const nodeId = swap.traceAddress.length === 0 ? 'root' : swap.traceAddress.join('.')
+    byNodeId.set(nodeId, swap)
+  }
+  return byNodeId
+}
+
+function useLoadTraceNodes(
+  data: TraceGraph | undefined,
+  swapsByNodeId: Map<string, TxSwap>,
+) {
+  // reloading on enrichment arrival re-runs the deterministic layout, so the
+  // graph looks identical - swap nodes just gain their color and label
+  const swapsKey = [...swapsByNodeId.keys()].join(',')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: swapsKey stands in for the map
   useEffect(() => {
     const store = traceNodesStore.getState()
     store.clear()
     if (!data) {
       return
     }
-    store.loadNodes(`trace:${data.transactionHash}`, toTraceNodes(data))
+    store.loadNodes(`trace:${data.transactionHash}`, toTraceNodes(data, swapsByNodeId))
 
     // loadNodes computed each node's height from its field count - now place
     // the call tree deterministically (depth on x, siblings stacked on y)
@@ -117,11 +171,12 @@ function useLoadTraceNodes(data: TraceGraph | undefined) {
       },
     )
     loaded.layout(positions)
-  }, [data])
+  }, [data, swapsKey])
 }
 
-function colorForCall(call: TraceCallNode): number {
+function colorForCall(call: TraceCallNode, isSwap: boolean): number {
   if (call.error) return COLOR_RED
+  if (isSwap) return COLOR_ORANGE
   switch (call.type) {
     case 'DELEGATECALL':
       return COLOR_PURPLE
@@ -140,7 +195,7 @@ function shortAddress(address: string | null): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
-function toTraceNodes(graph: TraceGraph): Node[] {
+function toTraceNodes(graph: TraceGraph, swapsByNodeId: Map<string, TxSwap>): Node[] {
   const childrenOf = new Map<string, TraceCallNode[]>()
   for (const node of graph.nodes) {
     if (node.parentId === null) continue
@@ -169,9 +224,11 @@ function toTraceNodes(graph: TraceGraph): Node[] {
       },
     }))
 
+    const swap = swapsByNodeId.get(call.id)
     const transfers = transferCount.get(call.id) ?? 0
     const suffixes = [
       call.error ? '✗' : undefined,
+      swap ? `⇅ ${swap.protocol ?? 'swap'}` : undefined,
       transfers > 0 ? `${transfers}⇄` : undefined,
     ].filter((x) => x !== undefined)
 
@@ -186,7 +243,7 @@ function toTraceNodes(graph: TraceGraph): Node[] {
       fields,
       hiddenFields: [],
       box: { x: 0, y: 0, width: NODE_WIDTH, height: 0 },
-      color: colorForCall(call),
+      color: colorForCall(call, swap !== undefined),
       hueShift: 0,
       data: call,
     }

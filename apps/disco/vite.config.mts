@@ -36,6 +36,14 @@ export default defineConfig({
         target: `http://localhost:${process.env.TRACE_API_PORT || 2022}/`,
         changeOrigin: true,
       },
+      '/api/contracts': {
+        target: `http://localhost:${process.env.TRACE_API_PORT || 2022}/`,
+        changeOrigin: true,
+      },
+      '/api/mev': {
+        target: `http://localhost:${process.env.EXPLORER_API_PORT || 3000}/`,
+        changeOrigin: true,
+      },
       '/api': {
         target: `http://localhost:${process.env.DISCO_API_PORT || 2021}/`,
         changeOrigin: true,

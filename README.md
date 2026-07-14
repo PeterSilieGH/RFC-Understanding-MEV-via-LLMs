@@ -17,7 +17,7 @@ The target architecture and the five milestones — with acceptance criteria —
 │   ├── explorer-api/   # Express — MEV explorer API (TypeScript port of mev-monitor)
 │   ├── explorer-web/   # Vite — explorer frontend
 │   ├── trace-api/      # Express — execution traces + contract sources (DiscoUI-derived)
-│   ├── trace-web/      # Vite + React — lightweight call-tree & source viewer
+│   ├── trace-web/      # Vite + React — standalone viewer (retired from the compose stack)
 │   └── disco/          # DiscoUI clone (protocolbeat @ pinned commit) + trace panel
 ├── packages/
 │   ├── config/         # Unified .env loading, zod-validated (@mev/config)
@@ -70,10 +70,9 @@ docker compose up -d
 
 # Explorer:  http://localhost:8080  (EXPLORER_WEB_PORT)
 # API:       http://localhost:3000  (EXPLORER_API_PORT)
-# Traces:    http://localhost:8081  (TRACE_WEB_PORT)
 # Trace API: http://localhost:2022  (TRACE_API_PORT; contract sources need ETHERSCAN_API_KEY)
 # DiscoUI:   http://localhost:8082  (DISCO_WEB_PORT; trace panel under /ui/p/<project>)
-# Disco API: http://localhost:2021  (DISCO_API_PORT; l2b ui --readonly from the submodule)
+# Disco API: http://localhost:2021  (DISCO_API_PORT; l2b ui from the submodule, API only)
 ```
 
 Requesting a block in the explorer triggers on-demand inspection: `explorer-api` runs the
@@ -131,13 +130,18 @@ and research reporting — not for building extraction bots that harm ordinary u
 - [x] Monorepo: pnpm workspaces + Turborepo + Biome, unified `.env`, docker compose (ADR-001/002)
 - [x] M1 (in progress): `mev-monitor` ported to TypeScript (`explorer-api` + `explorer-web`);
       remaining: behavior verification against the reference on live-inspected blocks
-- [x] M2 (in progress): `trace-api` + `trace-web` — call-tree graphs via
-      `debug_traceTransaction`, contract sources/metadata via Etherscan;
-      remaining: discovery-style relation metadata, verification against live traces
+- [x] M2 (in progress): `trace-api` — call-tree graphs via `debug_traceTransaction`,
+      contract sources/metadata via Etherscan; remaining: discovery-style relation
+      metadata, verification against live traces (`trace-web`, the interim viewer,
+      is retired from the compose stack in favor of the DiscoUI trace panel)
 - [x] M3 (in progress): DiscoUI cloned into `apps/disco` with a `trace` panel
-      reusing the nodes-tab graph stack (incl. its WebGL renderer); remaining:
-      trace-panel polish (details sidebar, token-flow overlay) and scale work
-- [ ] M4 — Explorer ↔ trace visualization wiring
+      reusing the nodes-tab graph stack (incl. its WebGL renderer); backed by a
+      writable `l2b ui` (project creation, terminal discover, sources from disk);
+      remaining: trace-panel polish (details sidebar, token-flow overlay) and scale work
+- [x] M4: explorer ↔ trace wiring (ADR-007) — every explorer tx deep-links to
+      `/ui/trace/:txHash` in DiscoUI; trace nodes are overlaid with the explorer's
+      MEV facts (swap nodes highlighted, sandwich/JIT/race legs one jump away) and
+      each contract's verified source is one click from the selected node
 - [ ] M5 — Agentic AI over traces and contracts (`agent-api`)
 
 ## License

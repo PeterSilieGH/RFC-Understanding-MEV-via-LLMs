@@ -61,7 +61,8 @@ const PANELS: Record<PanelId, Panel> = {
   list: { icon: IconList, body: ListPanel },
   values: { icon: IconSigma, body: ValuesPanel },
   nodes: { icon: IconNodes, body: NodesPanel },
-  trace: { icon: IconTrace, body: TracePanel },
+  // the panel form takes no deep-linked hash (that's the /ui/trace/:txHash route)
+  trace: { icon: IconTrace, body: () => <TracePanel /> },
   code: { icon: IconCode, body: CodePanel },
   preview: { icon: IconWebApp, body: PreviewPanel },
   analyze: { icon: IconChatbot, body: AnalyzePanel },

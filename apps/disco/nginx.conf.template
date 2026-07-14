@@ -1,6 +1,7 @@
 # Host-networked (see docker-compose.yml): listens on the host port directly
-# and proxies APIs over loopback. /api/traces goes to our trace-api, the rest
-# of /api to the DiscoUI backend (l2b ui from the l2beat submodule).
+# and proxies APIs over loopback. /api/traces and /api/contracts go to our
+# trace-api, /api/mev to our explorer-api (M4 enrichment), the rest of /api
+# to the DiscoUI backend (l2b ui from the l2beat submodule).
 server {
   listen ${DISCO_WEB_PORT};
   root /usr/share/nginx/html;
@@ -9,6 +10,18 @@ server {
   location /api/traces/ {
     proxy_pass http://127.0.0.1:${TRACE_API_PORT};
     proxy_set_header Host $host;
+  }
+
+  location /api/contracts/ {
+    proxy_pass http://127.0.0.1:${TRACE_API_PORT};
+    proxy_set_header Host $host;
+  }
+
+  location /api/mev/ {
+    proxy_pass http://127.0.0.1:${EXPLORER_API_PORT};
+    proxy_set_header Host $host;
+    # /api/mev/tx/:hash aggregates a whole block's MEV facts - can be slow
+    proxy_read_timeout 120s;
   }
 
   location /api/ {

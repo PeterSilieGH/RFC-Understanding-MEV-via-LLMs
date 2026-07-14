@@ -9,10 +9,27 @@ import { ethers } from "ethers";
 const config = loadConfig();
 const provider = new ethers.JsonRpcProvider(config.RPC_URL);
 
+// Big traces take a while, but a degraded node can also leave the call
+// hanging forever - fail instead so clients see an error, not a stalled tab.
+const TRACE_TIMEOUT_MS = 60_000;
+
 export async function getDebugTrace(transactionHash: string): Promise<DebugTransactionCall> {
-  const response = await provider.send("debug_traceTransaction", [
-    transactionHash,
-    { tracer: "callTracer", tracerConfig: { withLog: true } },
-  ]);
-  return parseDebugTrace(response);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const response = await Promise.race([
+      provider.send("debug_traceTransaction", [
+        transactionHash,
+        { tracer: "callTracer", tracerConfig: { withLog: true } },
+      ]),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("debug_traceTransaction timed out - RPC node degraded?")),
+          TRACE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    return parseDebugTrace(response);
+  } finally {
+    clearTimeout(timer);
+  }
 }

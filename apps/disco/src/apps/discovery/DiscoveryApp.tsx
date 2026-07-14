@@ -6,6 +6,8 @@ import { NotificationsRoot } from './components/Notifications'
 import { HomePage } from './HomePage'
 import { ConfigModelsProvider } from './hooks/useConfigModels'
 import { NewProjectPage } from './NewProjectPage'
+// DIVERGENCE(mev): standalone trace deep-link page (M4)
+import { TracePage } from './panel-trace/TracePage'
 import { ProjectPage } from './ProjectPage'
 import { RendererBenchPage } from './RendererBenchPage'
 
@@ -42,6 +44,15 @@ export const DiscoveryAppModule: AppModule = {
         {
           path: 'new',
           element: <NewProjectPage />,
+        },
+        // DIVERGENCE(mev): trace deep links from the MEV explorer (M4)
+        {
+          path: 'trace',
+          element: <TracePage />,
+        },
+        {
+          path: 'trace/:txHash',
+          element: <TracePage />,
         },
         {
           path: 'reports/config-health',

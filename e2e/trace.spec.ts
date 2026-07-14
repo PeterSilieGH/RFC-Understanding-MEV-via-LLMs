@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { TRACE_API, TRACE_WEB, WETH, anyRecentTxHash } from "./helpers.js";
+import { TRACE_API, WETH, anyRecentTxHash } from "./helpers.js";
 
 test.describe("trace-api", () => {
   test("health responds", async ({ request }) => {
@@ -39,42 +39,15 @@ test.describe("trace-api", () => {
   });
 });
 
-test.describe("trace-web", () => {
-  test("serves the trace UI through nginx", async ({ page }) => {
-    await page.goto(TRACE_WEB);
-    await expect(page.locator("h1")).toHaveText("MEV Trace Explorer");
-    await expect(page.locator("input")).toBeVisible();
-  });
-
-  test("shows a validation error for garbage input", async ({ page }) => {
-    await page.goto(TRACE_WEB);
-    await page.locator("input").fill("garbage");
-    await page.getByRole("button", { name: "Load" }).click();
-    await expect(page.locator(".error")).toContainText("Enter a transaction hash");
-  });
-
-  test("renders WETH contract sources end-to-end", async ({ page }) => {
-    await page.goto(TRACE_WEB);
-    await page.locator("input").fill(`eth:${WETH}`);
-    await page.getByRole("button", { name: "Load" }).click();
-    await expect(page.locator("h2")).toContainText("WETH9", { timeout: 15_000 });
-    await expect(page.locator("pre.source")).toContainText("contract WETH9");
-  });
-
-  test("renders a live execution trace when the RPC node is up", async ({ page }) => {
+test.describe("trace graph endpoint", () => {
+  test("returns a rooted graph for a live transaction", async ({ request }) => {
     const txHash = await anyRecentTxHash();
     test.skip(txHash === null, "external RPC node not reachable");
 
-    const graphRes = await fetch(`${TRACE_API}/api/traces/${txHash}/graph`);
-    expect(graphRes.ok).toBe(true);
-    const graph = await graphRes.json();
+    const res = await request.get(`${TRACE_API}/api/traces/${txHash}/graph`);
+    expect(res.ok()).toBe(true);
+    const graph = await res.json();
     expect(graph.nodes.length).toBeGreaterThan(0);
     expect(graph.nodes[0].id).toBe("root");
-
-    await page.goto(TRACE_WEB);
-    await page.locator("input").fill(txHash as string);
-    await page.getByRole("button", { name: "Load" }).click();
-    await expect(page.locator("h2")).toContainText("Trace", { timeout: 15_000 });
-    await expect(page.locator("ul.tree")).toBeVisible();
   });
 });
