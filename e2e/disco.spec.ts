@@ -66,33 +66,25 @@ test.describe("disco-web (cloned DiscoUI + trace panel)", () => {
     await page.getByPlaceholder("Transaction hash (0x…)").fill(txHash as string);
     await page.getByRole("button", { name: "Trace" }).click();
 
-    // the root call renders as a node (name starts with the call type)
-    await expect(page.getByText(/^CALL 0x/).first()).toBeVisible({ timeout: 20_000 });
+    // nodes are titled by contract (call types live in the color legend)
+    await expect(page.getByText(/^0x[0-9a-f]{4}/).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("delegatecall")).toBeVisible();
   });
 });
 
 test.describe("trace deep links + MEV enrichment (M4)", () => {
-  test("standalone /ui/trace/:txHash page pre-loads the transaction", async ({ page }) => {
+  test("standalone /ui/trace/:txHash deep link renders the graph without the manual form", async ({
+    page,
+  }) => {
     const txHash = anySwapTxHash();
     test.skip(txHash === null, "no decoded swaps in the shared postgres");
 
     await page.goto(`${DISCO_WEB}/ui/trace/${txHash}`);
-    await expect(page.getByPlaceholder("Transaction hash (0x…)")).toHaveValue(txHash as string);
-    // MEV facts come from explorer-api through the /api/mev proxy; a tx with
-    // decoded swaps shows the swap-count chip regardless of RPC availability
-    await expect(page.getByText(/decoded swap/)).toBeVisible({ timeout: 30_000 });
-  });
-
-  test("a sandwich leg is labeled with jumps to its other legs", async ({ page }) => {
-    const txHash = anySandwichFrontrunTxHash();
-    test.skip(txHash === null, "no sandwiches in the shared postgres");
-
-    await page.goto(`${DISCO_WEB}/ui/trace/${txHash}`);
-    await expect(page.getByText(/sandwich front-run/i).first()).toBeVisible({
-      timeout: 30_000,
-    });
-    // the back-run leg is one click away
-    await expect(page.getByRole("button", { name: /back-run: 0x/ }).first()).toBeVisible();
+    // deep links determine the tx - no input form (wp-trace-polish); the
+    // graph and its call-type legend render on the resolve screen and in
+    // the workspace alike, so a fast redirect cannot flake this
+    await expect(page.getByText("delegatecall")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByPlaceholder("Transaction hash (0x…)")).toHaveCount(0);
   });
 });
 
@@ -115,8 +107,10 @@ test.describe("trace workspace (ADR-008)", () => {
     await expect(headers.nth(0)).toHaveText(/list/, { timeout: 30_000 });
     await expect(headers.nth(1)).toHaveText(/nodes/);
     await expect(headers.nth(2)).toHaveText(/values/);
-    // the nodes panel renders the execution trace, not the dependency graph
-    await expect(page.getByText(/^CALL /).first()).toBeVisible({ timeout: 30_000 });
+    // the nodes panel renders the execution trace (call-type color legend)
+    // and the TopBar shows the incident identity with the extracted value
+    await expect(page.getByText("delegatecall")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/^sandwich ·/)).toBeVisible({ timeout: 30_000 });
 
     // the List shows the incident folders (Initial + one folder per leg)
     await expect(page.getByText("Initial").first()).toBeVisible({ timeout: 30_000 });
@@ -124,9 +118,10 @@ test.describe("trace workspace (ADR-008)", () => {
     await expect(page.getByText(/^Back-run 0x/).first()).toBeVisible();
 
     // selecting a List entry drives the shared selection: Values leaves its
-    // "select a contract" empty state
+    // "select a contract" empty state and gains the per-call Trace section
     await page.locator("li li").first().click();
     await expect(page.getByText(/Select a contract/i)).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByRole("button", { name: "Trace", exact: true })).toBeVisible();
 
     // repeat open serves the synthetic project from disk - the redirect must
     // be near-instant, no second discovery run

@@ -3,8 +3,11 @@
 // instance via NodesStoreProvider), same Viewport/Controls, so selection,
 // dragging, hiding, coloring, undo/redo, and stored layouts all just work.
 // M4: nodes are overlaid with the explorer's MEV facts (decoded swaps turn
-// orange), a strip above the graph shows the transaction's MEV role with
-// jumps to related legs, and a details sidebar links contract sources.
+// orange). Post-M4.5 polish (wp-trace-polish): the manual tx form only
+// renders on /ui/trace (deep links determine the tx; the List switches
+// legs), call types are expressed by color alone (legend overlay), and
+// per-call details live in the docked `trace` panel instead of a floating
+// sidebar - the graph publishes its active tx in the workspace store.
 import {
   isTxHash,
   layoutTraceGraph,
@@ -29,8 +32,7 @@ import { NodesStoreProvider, traceNodesStore } from '../panel-nodes/store/store'
 import { NODE_WIDTH } from '../panel-nodes/store/utils/constants'
 import { Viewport } from '../panel-nodes/view/Viewport'
 import { usePanelStore } from '../store/panel-store'
-import { TraceMevStrip } from './TraceMevStrip'
-import { TraceNodeDetails } from './TraceNodeDetails'
+import { TraceLegend } from './TraceLegend'
 import { useTraceWorkspaceStore } from './workspace-store'
 
 const TREE_GAP_X = 120
@@ -79,6 +81,7 @@ export function TracePanel(props: { initialTxHash?: string }) {
   useLoadTraceNodes(response.data, swapsByNodeId, workspace.data)
   useFocusRequests(txHash, response.data, setInput, setTxHash)
   useSyncGraphSelectionToPanelStore(workspace.data)
+  usePublishActiveTxHash(txHash)
 
   function openTx(value: string) {
     const hash = value.trim().toLowerCase()
@@ -99,36 +102,32 @@ export function TracePanel(props: { initialTxHash?: string }) {
   return (
     <NodesStoreProvider value={traceNodesStore}>
       <div className="flex h-full w-full flex-col">
-        <form
-          onSubmit={onSubmit}
-          className="flex items-center gap-2 border-coffee-600 border-b p-2"
-        >
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Transaction hash (0x…)"
-            spellCheck={false}
-            className="h-7 min-w-0 flex-1 rounded bg-coffee-800 px-2 font-mono text-coffee-100 text-xs outline-none placeholder:text-coffee-400"
-          />
-          <button
-            type="submit"
-            className="h-7 rounded bg-coffee-600 px-3 font-bold text-coffee-100 text-xs uppercase hover:bg-coffee-500"
+        {/* deep links determine the tx; the form is only the manual entry point */}
+        {!routeTxHash && (
+          <form
+            onSubmit={onSubmit}
+            className="flex items-center gap-2 border-coffee-600 border-b p-2"
           >
-            Trace
-          </button>
-        </form>
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Transaction hash (0x…)"
+              spellCheck={false}
+              className="h-7 min-w-0 flex-1 rounded bg-coffee-800 px-2 font-mono text-coffee-100 text-xs outline-none placeholder:text-coffee-400"
+            />
+            <button
+              type="submit"
+              className="h-7 rounded bg-coffee-600 px-3 font-bold text-coffee-100 text-xs uppercase hover:bg-coffee-500"
+            >
+              Trace
+            </button>
+          </form>
+        )}
         {inputError && <p className="p-2 text-aux-red text-xs">{inputError}</p>}
         {response.isError && (
           <p className="p-2 text-aux-red text-xs">
             {(response.error as Error).message}
           </p>
-        )}
-        {txHash !== '' && (
-          <TraceMevStrip
-            mev={mevResponse.data}
-            isLoading={mevResponse.isLoading}
-            onOpenTx={openTx}
-          />
         )}
         <div className="relative min-h-0 w-full flex-1">
           {response.isLoading && txHash !== '' ? (
@@ -137,7 +136,7 @@ export function TracePanel(props: { initialTxHash?: string }) {
             <>
               <Viewport />
               <Controls />
-              <TraceNodeDetails swapsByNodeId={swapsByNodeId} />
+              <TraceLegend />
             </>
           )}
         </div>
@@ -146,8 +145,20 @@ export function TracePanel(props: { initialTxHash?: string }) {
   )
 }
 
+/**
+ * The docked trace details panel lives outside this component tree; it
+ * learns which leg's graph is on screen through the workspace store.
+ */
+function usePublishActiveTxHash(txHash: string) {
+  const setActiveTxHash = useTraceWorkspaceStore((state) => state.setActiveTxHash)
+  useEffect(() => {
+    setActiveTxHash(txHash === '' ? undefined : txHash)
+    return () => setActiveTxHash(undefined)
+  }, [txHash, setActiveTxHash])
+}
+
 /** Decoded swaps of the traced tx, keyed by trace-graph node id. */
-function swapsForTx(mev: TxMev | undefined, txHash: string): Map<string, TxSwap> {
+export function swapsForTx(mev: TxMev | undefined, txHash: string): Map<string, TxSwap> {
   const byNodeId = new Map<string, TxSwap>()
   if (!mev?.transaction || mev.transaction.hash !== txHash) {
     return byNodeId
@@ -270,13 +281,19 @@ function toTraceNodes(
 ): Node[] {
   // T5 (ADR-008): discovered names for node titles, decoded selectors for
   // field labels; graceful fallback to addresses/raw 4-bytes until the
-  // synthetic project is ready
+  // synthetic project is ready. Call types are not spelled out - the node
+  // color carries them (TraceLegend).
   const displayAddress = (address: string | null): string => {
     const name = address ? workspace?.contracts?.[address.toLowerCase()]?.name : undefined
     return name || shortAddress(address)
   }
-  const displaySelector = (selector: string | null): string =>
-    selector ? ` ${workspace?.selectors?.[selector] ?? selector}` : ''
+  const fieldLabel = (child: TraceCallNode): string => {
+    if (child.selector) {
+      return workspace?.selectors?.[child.selector] ?? child.selector
+    }
+    // no calldata: a plain value transfer or a contract creation
+    return child.type.startsWith('CREATE') ? 'create' : '()'
+  }
   const childrenOf = new Map<string, TraceCallNode[]>()
   for (const node of graph.nodes) {
     if (node.parentId === null) continue
@@ -296,7 +313,7 @@ function toTraceNodes(
   return graph.nodes.map((call) => {
     const children = childrenOf.get(call.id) ?? []
     const fields: Field[] = children.map((child) => ({
-      name: `${child.type.toLowerCase()}${displaySelector(child.selector)}${child.error ? ' ✗' : ''}`,
+      name: `${fieldLabel(child)}${child.error ? ' ✗' : ''}`,
       target: child.id,
       box: { x: 0, y: 0, width: 0, height: 0 },
       connection: {
@@ -313,6 +330,10 @@ function toTraceNodes(
       transfers > 0 ? `${transfers}⇄` : undefined,
     ].filter((x) => x !== undefined)
 
+    // a decoded swap titles the node with its pool, not the call target
+    // (usually the same contract, but the swap decoding is authoritative)
+    const titleAddress = swap ? swap.contractAddress : call.to
+
     return {
       id: call.id,
       address: call.to ?? call.from,
@@ -320,7 +341,7 @@ function toTraceNodes(
       isReachable: true,
       hasTemplate: false,
       addressType: call.error ? 'Unverified' : 'Contract',
-      name: `${call.type} ${displayAddress(call.to)}${suffixes.length > 0 ? ` ${suffixes.join(' ')}` : ''}`,
+      name: `${displayAddress(titleAddress)}${suffixes.length > 0 ? ` ${suffixes.join(' ')}` : ''}`,
       fields,
       hiddenFields: [],
       box: { x: 0, y: 0, width: NODE_WIDTH, height: 0 },

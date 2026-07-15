@@ -14,6 +14,10 @@ export interface TraceFocusRequest {
 interface TraceWorkspaceState {
   focusRequest: TraceFocusRequest | undefined
   requestFocus: (txHash: string, nodeId: string) => void
+  /** the transaction whose graph the nodes panel currently shows - the
+   * docked trace details panel joins the selection onto its MEV facts */
+  activeTxHash: string | undefined
+  setActiveTxHash: (txHash: string | undefined) => void
 }
 
 export const useTraceWorkspaceStore = create<TraceWorkspaceState>()((set, get) => ({
@@ -22,4 +26,6 @@ export const useTraceWorkspaceStore = create<TraceWorkspaceState>()((set, get) =
     set({
       focusRequest: { txHash, nodeId, seq: (get().focusRequest?.seq ?? 0) + 1 },
     }),
+  activeTxHash: undefined,
+  setActiveTxHash: (txHash) => set({ activeTxHash: txHash }),
 }))

@@ -57,6 +57,7 @@ interface Panel {
 const PANELS: Record<PanelId, Panel> = {
   // DIVERGENCE(mev): in the trace workspace the List shows incident folders
   list: { icon: IconList, body: ListTracePanel },
+  // DIVERGENCE(mev): includes the per-call Trace section in trace context
   values: { icon: IconSigma, body: ValuesPanel },
   // DIVERGENCE(mev): in the trace workspace (ADR-008) the nodes panel IS the
   // execution-trace graph; in a project it stays the dependency graph
@@ -170,10 +171,13 @@ export const dockingConfig: DockingConfig = {
 
 // DIVERGENCE(mev): the trace workspace (ADR-008) docks the same panel
 // catalog around an incident's synthetic trace-<hash8> project, with its
-// own persisted layouts and the trace graph in the center by default.
+// own persisted layouts and the trace graph in the center by default. The
+// per-call details live inside Values as the "Trace" section
+// (wp-trace-polish; storage key bumped past the short-lived docked
+// variant so stale layouts don't linger).
 export const traceDockingConfig: DockingConfig = {
   ...dockingConfig,
-  storageKey: 'docking/v2:trace',
+  storageKey: 'docking/v4:trace',
   defaultLayout: newSplit(
     'row',
     [newLeaf('list'), newLeaf('nodes'), newLeaf('values')],

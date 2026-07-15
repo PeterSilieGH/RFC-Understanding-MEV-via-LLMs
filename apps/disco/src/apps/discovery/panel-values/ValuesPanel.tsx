@@ -12,6 +12,9 @@ import { useProjectData } from '../hooks/useProjectData'
 import { AbiDisplay } from './AbiDisplay'
 import { AddressDisplay } from './AddressDisplay'
 import { ContractConfigDialog } from './contract-config-dialog/ContractConfigDialog'
+// DIVERGENCE(mev): per-call trace details as a section in this panel
+// (wp-trace-polish); renders nothing outside the trace workspace
+import { TraceValuesSection } from '../panel-trace/TraceValuesSection'
 import { FieldDisplay } from './Field'
 import { FieldTag } from './FieldTag'
 import { Folder } from './Folder'
@@ -34,6 +37,8 @@ export function ValuesPanel() {
 
   return (
     <div className="h-full w-full">
+      {/* DIVERGENCE(mev): call details of the trace-graph selection */}
+      <TraceValuesSection />
       {!selected && <ActionNeededState message="Select a contract" />}
       {selected && (
         <Display
