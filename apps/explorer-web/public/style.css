@@ -321,6 +321,7 @@ button.ghost.small { padding: 4px 9px; font-size: 11px; }
 .stat-card.accent-sandwich .stat-value { color: var(--orange); }
 .stat-card.accent-liquidation .stat-value { color: var(--blue); }
 .stat-card.accent-total .stat-value { color: var(--text); }
+.stat-card.accent-mev .stat-value { color: var(--yellow); }
 .stat-card.accent-hot { box-shadow: inset 0 0 0 1px var(--red); }
 .stat-card.accent-hot .stat-value { color: var(--red); }
 
@@ -419,6 +420,7 @@ tr.expanded .expand-arrow { transform: rotate(90deg); display: inline-block; }
 .badge.none { color: var(--muted); }
 .badge.mp-public { color: var(--green); }
 .badge.mp-private { color: var(--red); }
+.badge.mp-caching { color: var(--yellow); }
 .badge.mp-unknown { color: var(--muted); }
 
 .detail-block { margin-bottom: 12px; }

@@ -13,7 +13,14 @@ const RETENTION_MS = 2 * 60 * 1000; // discard sightings older than 2 minutes
 
 const provider = new ethers.JsonRpcProvider(config.RPC_URL);
 
-export type MempoolStatus = "public" | "private" | "unknown";
+export type MempoolStatus = "public" | "private" | "caching" | "unknown";
+
+// Guard rail: "private" means "we were watching and never saw it" - but a tx
+// that was already pending when the watcher started is invisible to us too.
+// Only after a full retention window of watching can absence-of-sighting be
+// blamed on privacy rather than on our own cold cache; until then classify
+// as "caching" (rendered as such in the explorer, never persisted).
+const WARMUP_MS = RETENTION_MS;
 
 export interface MempoolClassification {
   status: MempoolStatus;
@@ -69,9 +76,13 @@ export function start(): void {
 /**
  * Classify a transaction's mempool visibility for a block mined at blockTimestampMs.
  * - "public": we saw it pending before inclusion; includes secondsInMempool
- * - "private": block is within our tracked retention window and we were already
- *   watching before it was mined, yet we never saw it pending -> it skipped the
- *   public mempool (e.g. sent directly to a builder)
+ * - "private": block is within our tracked retention window and we had been
+ *   watching for at least a full retention window before it was mined, yet we
+ *   never saw the tx pending -> it skipped the public mempool (e.g. sent
+ *   directly to a builder)
+ * - "caching": the watcher was running but not yet warmed up when the block
+ *   was mined - the tx may simply have entered the mempool before we started
+ *   watching, so its absence proves nothing
  * - "unknown": the block is too old (outside the 2-minute retention window) or
  *   predates the watcher starting, so we have no coverage either way
  */
@@ -96,7 +107,11 @@ export function classify(txHash: string, blockTimestampMs: number): MempoolClass
   const watchedBeforeBlock = watcherStartedAtMs !== null && watcherStartedAtMs <= blockTimestampMs;
 
   if (withinRetention && watchedBeforeBlock) {
-    return { status: "private", secondsInMempool: null, firstSeenAtMs: null };
+    const warmAtBlock =
+      watcherStartedAtMs !== null && blockTimestampMs - watcherStartedAtMs >= WARMUP_MS;
+    return warmAtBlock
+      ? { status: "private", secondsInMempool: null, firstSeenAtMs: null }
+      : { status: "caching", secondsInMempool: null, firstSeenAtMs: null };
   }
   return { status: "unknown", secondsInMempool: null, firstSeenAtMs: null };
 }
@@ -105,10 +120,15 @@ export function getStatus(): {
   trackedHashes: number;
   watcherStartedAtMs: number | null;
   healthy: boolean;
+  warmedUp: boolean;
+  warmupRemainingMs: number;
 } {
+  const elapsed = watcherStartedAtMs === null ? 0 : Date.now() - watcherStartedAtMs;
   return {
     trackedHashes: firstSeenAt.size,
     watcherStartedAtMs,
     healthy: pollFailures < 5,
+    warmedUp: watcherStartedAtMs !== null && elapsed >= WARMUP_MS,
+    warmupRemainingMs: watcherStartedAtMs === null ? WARMUP_MS : Math.max(0, WARMUP_MS - elapsed),
   };
 }

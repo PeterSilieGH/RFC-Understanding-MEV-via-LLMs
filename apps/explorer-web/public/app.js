@@ -150,6 +150,12 @@ const MEMPOOL_INFO = {
     explain:
       "This transaction never showed up in our node's mempool, even though we were actively watching at the time it was included. Most likely it was sent directly to a block builder (e.g. via a private RPC / Flashbots Protect) rather than broadcast publicly.",
   },
+  caching: {
+    label: "Caching",
+    short: "Mempool watcher is still warming up",
+    explain:
+      "The explorer's mempool watcher started less than 2 minutes before this block was mined. This transaction may simply have entered the mempool before we began watching, so we don't call it private — check back once the cache has filled up.",
+  },
   unknown: {
     label: "Not tracked",
     short: "Outside our mempool tracking window",
@@ -276,7 +282,10 @@ function renderBlockMeta() {
 function pushHistory(blockNumber, transactions, builder, bid) {
   const mevCount = transactions.filter((t) => t.mev.length > 0).length;
   const privateCount = transactions.filter((t) => t.mempool?.status === "private").length;
-  const trackedCount = transactions.filter((t) => t.mempool?.status !== "unknown").length;
+  // definite verdicts only - "caching" (watcher warming up) proves nothing
+  const trackedCount = transactions.filter(
+    (t) => t.mempool?.status === "public" || t.mempool?.status === "private",
+  ).length;
   const { builderBidEth, bidPct } = computeFeeTotals(transactions, bid);
 
   state.history = state.history.filter((h) => h.blockNumber !== blockNumber);
@@ -409,63 +418,95 @@ function renderStats(transactions, bid) {
   const liquidations = count("liquidation");
   const swaps = transactions.reduce((n, tx) => n + tx.swaps.length, 0);
   const privateTx = transactions.filter((t) => t.mempool?.status === "private").length;
-  const trackedTx = transactions.filter((t) => t.mempool?.status !== "unknown").length;
+  // definite verdicts only - "caching" (watcher warming up) proves nothing
+  const trackedTx = transactions.filter(
+    (t) => t.mempool?.status === "public" || t.mempool?.status === "private",
+  ).length;
+  const cachingTx = transactions.filter((t) => t.mempool?.status === "caching").length;
 
-  const { priorityFeeEth, priorityFeePublicEth, builderBidEth, bidPct, bidPctOfAll } =
-    computeFeeTotals(transactions, bid);
+  const { priorityFeeEth, priorityFeePublicEth, builderBidEth, bidPct } = computeFeeTotals(
+    transactions,
+    bid,
+  );
 
   const pctLabel = (v) =>
     v != null
       ? `<span class="${v >= 0 ? "profit" : "loss"}">bid ${v >= 0 ? "+" : ""}${v.toFixed(1)}%</span>`
       : null;
-  const extreme = bidPct != null && bidPct > EXTREME_BID_PCT;
-  const extremeOfAll = bidPctOfAll != null && bidPctOfAll > EXTREME_BID_PCT;
+
+  const priorityFeePrivateEth =
+    sumPriorityFeeWei(transactions.filter((tx) => tx.mempool?.status === "private")) / 1e18;
+  const sumTipsEth = (txs) => txs.reduce((s, tx) => s + (tx.coinbaseTransferEth || 0), 0);
+  const tipsPublicEth = sumTipsEth(transactions.filter((tx) => tx.mempool?.status === "public"));
+  const tipsPrivateEth = sumTipsEth(transactions.filter((tx) => tx.mempool?.status === "private"));
+  // The builder's block income is all priority fees plus all coinbase tips
+  // (classified or not); the bid is what it pays the proposer for the slot.
+  const builderIncomeEth = priorityFeeEth + sumTipsEth(transactions);
+  const bidPctOfIncome =
+    builderBidEth != null && builderIncomeEth > 0
+      ? (builderBidEth / builderIncomeEth) * 100
+      : null;
+  const bidProfitable = builderBidEth != null && builderBidEth <= builderIncomeEth;
+  const money = state.showEur ? "EUR" : "ETH";
 
   const cards = [
     { label: "Transactions", value: transactions.length, accent: "total" },
-    { label: "Arbitrages", value: arbitrages, accent: "arbitrage" },
-    { label: "Sandwich attacks", value: sandwiches, accent: "sandwich" },
-    { label: "Liquidations", value: liquidations, accent: "liquidation" },
     { label: "DEX swaps", value: swaps, accent: "total" },
     {
-      label: trackedTx > 0 ? "Private tx (tracked)" : "Private tx (not tracked)",
-      value: privateTx,
-      accent: "sandwich",
+      label: "Arbs / sandwiches / liquidations",
+      value: 0,
+      accent: "mev",
+      raw: `${arbitrages}/${sandwiches}/${liquidations}`,
+    },
+    cachingTx > 0
+      ? {
+          // watcher warming up: absence of sightings proves nothing yet
+          label: "Watched / private tx",
+          value: 0,
+          accent: "mev",
+          raw: "caching",
+        }
+      : trackedTx > 0
+        ? {
+            label: "Watched / private tx",
+            value: 0,
+            accent: "total",
+            raw: `<span class="profit">${trackedTx}</span>/<span class="loss">${privateTx}</span>`,
+          }
+        : { label: "Watched / private tx (not tracked)", value: 0, accent: "total", raw: "n/a" },
+    {
+      label: `Priority fees — public tx only (${money})`,
+      value: priorityFeePublicEth,
+      accent: "total",
+      format: (v) => fmtEth(v),
+      sub: pctLabel(bidPct),
     },
     {
-      label: `Priority fees paid (${state.showEur ? "EUR" : "ETH"})`,
-      value: priorityFeeEth,
-      accent: extremeOfAll ? "hot" : "total",
-      format: (v) => fmtEth(v),
-      sub: pctLabel(bidPctOfAll),
-    },
-  ];
-
-  const pctSub = pctLabel(bidPct);
-
-  cards.push({
-    label: `Priority fees — public tx only (${state.showEur ? "EUR" : "ETH"})`,
-    value: priorityFeePublicEth,
-    accent: extreme ? "hot" : "total",
-    format: (v) => fmtEth(v),
-    sub: pctSub,
-  });
-
-  if (builderBidEth != null) {
-    cards.push({
-      label: `Builder bid (${state.showEur ? "EUR" : "ETH"})${bid?.relay ? ` — via ${shortRelay(bid.relay)}` : ""}`,
-      value: builderBidEth,
+      label: `Priority fees — private tx only (${money})`,
+      value: priorityFeePrivateEth,
       accent: "total",
       format: (v) => fmtEth(v),
-    });
-  } else {
-    cards.push({
-      label: `Builder bid (${state.showEur ? "EUR" : "ETH"})`,
+      sub: pctLabel(pctDiff(builderBidEth, priorityFeePrivateEth)),
+    },
+    {
+      label: `Builder tips public / private (${money})`,
       value: 0,
       accent: "total",
-      raw: "n/a",
-    });
-  }
+      raw: `${fmtEth(tipsPublicEth)} / ${fmtEth(tipsPrivateEth)}`,
+    },
+    builderBidEth != null
+      ? {
+          label: `Builder bid (${money})${bid?.relay ? ` — via ${shortRelay(bid.relay)}` : ""}`,
+          value: 0,
+          accent: "total",
+          raw: `<span class="${bidProfitable ? "profit" : "loss"}">${fmtEth(builderBidEth)}</span>`,
+          sub:
+            bidPctOfIncome != null
+              ? `${bidPctOfIncome.toFixed(1)}% of priority fees + tips`
+              : null,
+        }
+      : { label: `Builder bid (${money})`, value: 0, accent: "total", raw: "n/a" },
+  ];
 
   statsEl.innerHTML = cards
     .map(

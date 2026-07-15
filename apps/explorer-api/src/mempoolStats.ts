@@ -6,13 +6,16 @@ import type { BlockTransaction } from "./mev.js";
  * table). The in-memory watcher forgets sightings after 2 minutes - whatever
  * a block view classified while the window was open is written down here so
  * the mempool statistics survive restarts and old blocks. First sighting
- * wins; 'unknown' means "no coverage" and is never stored.
+ * wins; only definite verdicts are stored - 'unknown' means "no coverage"
+ * and 'caching' means "watcher not warmed up yet", both transient.
  */
 export async function recordMempoolClassifications(
   blockNumber: number,
   txs: BlockTransaction[],
 ): Promise<void> {
-  const classified = txs.filter((tx) => tx.mempool && tx.mempool.status !== "unknown");
+  const classified = txs.filter(
+    (tx) => tx.mempool && (tx.mempool.status === "public" || tx.mempool.status === "private"),
+  );
   if (classified.length === 0) return;
   await ensureAppTables();
 
