@@ -77,8 +77,14 @@ docker compose up -d
 
 Requesting a block in the explorer triggers on-demand inspection: `explorer-api` runs the
 `mev-inspect-py:local` image once for that block, which writes classified traces, swaps,
-arbitrages, sandwiches, and liquidations to the shared Postgres. There is no background
-indexer.
+arbitrages, sandwiches, and liquidations to the shared Postgres. For bulk coverage the
+explorer's timeline has an analysis slider: dragging it left starts a background backfill
+(`POST /api/backfill`) that walks from that height to the chain head, strictly one block
+at a time through the same inspection dedupe (never preempting interactive views).
+Coverage paints green on the timeline as inspection progresses and survives restarts —
+it is derived from Postgres (`GET /api/analyzed-ranges`), not client state. A second
+slider selects a 100-block interval for the block strip, auto-focusing the interval's
+highest-MEV block (`GET /api/mev-activity`).
 
 ## Development
 

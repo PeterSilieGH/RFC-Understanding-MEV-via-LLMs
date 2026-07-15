@@ -2,6 +2,13 @@ import { loadConfig } from "@mev/config";
 import { pool } from "@mev/db";
 import { ethers } from "ethers";
 import express from "express";
+import {
+  getAnalyzedRanges,
+  getBackfillStatus,
+  getMevActivity,
+  startBackfill,
+  stopBackfill,
+} from "./backfill.js";
 import { getBlockBuilder, getBuilderStats } from "./builder.js";
 import { getEurPrices } from "./eurPrices.js";
 import { getAddressActivity, getLeaderboard, getPoolHeatmap, getTopSearchers } from "./insights.js";
@@ -14,8 +21,69 @@ import { getBuilderBid, getRelayStats } from "./relay.js";
 const config = loadConfig();
 const provider = new ethers.JsonRpcProvider(config.RPC_URL);
 const app = express();
+app.use(express.json());
 
 mempoolWatcher.start();
+
+// Background inspection queue (wp-explorer-redesign E6). POST starts (or
+// restarts) a walk from `fromBlock` up to the chain head; GET reports
+// progress; DELETE stops the walk.
+app.post("/api/backfill", async (req, res) => {
+  const fromBlock = Number(req.body?.fromBlock);
+  if (!Number.isInteger(fromBlock) || fromBlock < 0) {
+    res.status(400).json({ error: "invalid fromBlock" });
+    return;
+  }
+  try {
+    const head = await provider.getBlockNumber();
+    const targetBlock = Number.isInteger(Number(req.body?.toBlock))
+      ? Math.min(Number(req.body.toBlock), head)
+      : head;
+    if (fromBlock > targetBlock) {
+      res.status(400).json({ error: `fromBlock is beyond the chain head (${head})` });
+      return;
+    }
+    res.json(await startBackfill(fromBlock, targetBlock));
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/backfill", (_req, res) => {
+  res.json(getBackfillStatus());
+});
+
+app.delete("/api/backfill", (_req, res) => {
+  res.json(stopBackfill());
+});
+
+app.get("/api/analyzed-ranges", async (req, res) => {
+  const from = Number(req.query.from);
+  const to = Number(req.query.to);
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) {
+    res.status(400).json({ error: "invalid from/to" });
+    return;
+  }
+  try {
+    res.json({ from, to, ranges: await getAnalyzedRanges(from, to) });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/mev-activity", async (req, res) => {
+  const from = Number(req.query.from);
+  const to = Number(req.query.to);
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) {
+    res.status(400).json({ error: "invalid from/to" });
+    return;
+  }
+  try {
+    res.json({ from, to, blocks: await getMevActivity(from, to) });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
 
 app.get("/api/latest", async (_req, res) => {
   try {

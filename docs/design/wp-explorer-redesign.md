@@ -174,3 +174,76 @@ E6 → E7 → E8.
 - **Timeline scale** — 25M+ blocks don't fit one linear track; the timeline
   shows a bounded window (e.g. newest N thousand blocks, zoomable later)
   — the interval slider's 100-block granularity sets the useful zoom.
+
+## Findings (2026-07-16, implementation complete)
+
+All tasks E1–E8 landed. Verified in-browser (12/12 ad-hoc checks) and via
+e2e (`e2e/explorer.spec.ts`: 17 passed, 1 conditionally skipped).
+
+- **E1–E3** as specced. Toast position is computed at show time from the
+  header's live bounding box (+8px), so it stays correct across viewport
+  changes; `showToast` behavior otherwise untouched.
+- **E4** — card order: Private tx, Transactions, DEX swaps, then
+  Arbitrages / Sandwiches / Liquidations as three `accent-blue` cards. The
+  "caching" and "not tracked" guard rails from the mempool watcher are
+  preserved on the private card.
+- **E5** — `.main-row` wraps the block table plus a 290px `.viz-column`
+  (extensible; the chart is its first tenant). The SVG persists across
+  renders — `initIncomeChart()` builds rects once, `renderIncomeChart()`
+  only updates `y`/`height`, and CSS transitions animate the change. Six
+  income segments (public/private/untracked × fees/tips; zero segments are
+  hidden from the legend), bid bar green/red by `bid ≤ income`, legend
+  carries the bid's relay + % of income and the Builder / Fee recipient
+  line (with an "unknown (no graffiti)" fallback).
+- **E6** — `backfill.ts`: strictly sequential walk with `isInspected`
+  skip, 2 attempts per block, 5s cooldown after failures, 250ms pause per
+  block, max 20 recorded errors. `startBackfill` stops a running walk and
+  waits for it to acknowledge before restarting — the newest POST wins.
+  NB: acknowledgement only happens between blocks, so a POST issued while
+  a block is mid-inspection blocks until that inspection finishes (can be
+  ~a minute). Validated on a real ~5000-block backfill: skips already-
+  covered blocks fast, zero failures.
+- **E7** — window = newest 5000 blocks (`TIMELINE_SPAN`), interval = 100
+  (`INTERVAL_SIZE`), coverage polled every 3s while a backfill runs.
+  Handle release → `POST /api/backfill` and disables follow-latest;
+  interval release → `/api/mev-activity`, ticker switches to interval mode
+  (analyzed blocks green, MEV pills), hottest block auto-loads (ties →
+  newest). Re-enabling follow-latest pins both sliders to head and
+  restores the history ticker. A running backfill's progress display is
+  resumed on page load from `GET /api/backfill`.
+- **E8** — e2e covers the backfill queue shape, 400 validation, a
+  1-block round-trip (skips itself when a real backfill is running rather
+  than clobbering it), analyzed-ranges compression + coverage, mev-activity
+  totals, header zones/toggle order, stats bar v2, chart + legend, MEV-only
+  filtering, toast-below-header, and timeline rendering with coverage.
+  README + CLAUDE.md updated (background backfill paragraph / pipeline
+  item 5).
+
+## Amendment (2026-07-16, user direction)
+
+- Stats bar: Transactions card moved back left of Private tx.
+- Follow-latest is now an icon box-toggle (⟳) in the top bar, left of the
+  MEV filter; the switch-style checkbox is gone (`setLive()` owns the
+  state + button class; timeline drags and `?block=` deep links call it).
+- Block selector text entry, "Load block" and "Jump to latest" removed —
+  navigation is the timeline, the ticker, prev/next (with a read-only
+  `#currentBlock` label between them), and `?block=N` deep links (which
+  now also switch follow-latest off, so the linked block isn't yanked
+  away; this is what the e2e suite navigates with).
+- Bottom tab bar restructured: 1-block analysis tabs left (**Mempool —
+  this block**, **Income vs bid**), then a flex spacer, then the
+  multi-block/util tabs right-bound (Address lookup, Leaderboard,
+  Sandwiched pools, Builder & relay share, **Wiki**).
+- Mempool tab is now a single-block order-flow analysis of the loaded
+  block (default tab, re-rendered on every block load): verdict coverage,
+  private share, effective price per gas public vs private + premium
+  (computed client-side from the block's transactions), and a
+  per-transaction strip in block position order (green public / red
+  private / orange caching / grey untracked, MEV txs outlined) so private
+  bundles cluster visibly. The old cross-block aggregate view is gone from
+  the UI; `GET /api/mempool-stats` remains for programmatic use.
+- The income-vs-bid chart moved from the viz column into the
+  **Income vs bid** tab (the viz column and `.main-row` are gone; the
+  persistent-SVG animation approach is unchanged).
+- "What does this mean?" popup became the **Wiki** tab (same legend
+  content, panel-framed instead of a toggled section).

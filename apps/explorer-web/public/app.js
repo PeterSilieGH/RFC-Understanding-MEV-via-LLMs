@@ -1,13 +1,10 @@
 const themeToggle = document.getElementById("themeToggle");
-const blockInput = document.getElementById("blockInput");
-const loadBtn = document.getElementById("loadBtn");
-const latestBtn = document.getElementById("latestBtn");
 const prevBtn = document.getElementById("prevBtn");
 const nextBtn = document.getElementById("nextBtn");
-const liveToggle = document.getElementById("liveToggle");
+const currentBlockEl = document.getElementById("currentBlock");
+const liveToggleBtn = document.getElementById("liveToggleBtn");
 const onlyMevToggle = document.getElementById("onlyMevToggle");
 const eurToggle = document.getElementById("eurToggle");
-const legendBtn = document.getElementById("legendBtn");
 const legendEl = document.getElementById("legend");
 const statsEl = document.getElementById("stats");
 const resultEl = document.getElementById("result");
@@ -17,7 +14,16 @@ const loadingText = document.getElementById("loadingText");
 const rpcDot = document.getElementById("rpcDot");
 const rpcText = document.getElementById("rpcText");
 const tickerEl = document.getElementById("ticker");
-const blockMetaEl = document.getElementById("blockMeta");
+const incomeChartEl = document.getElementById("incomeChart");
+const incomeLegendEl = document.getElementById("incomeLegend");
+const timelineEl = document.getElementById("timeline");
+const timelineTrackEl = document.getElementById("timelineTrack");
+const timelineCoverageEl = document.getElementById("timelineCoverage");
+const timelineIntervalEl = document.getElementById("timelineInterval");
+const timelineHandleEl = document.getElementById("timelineHandle");
+const timelineStartEl = document.getElementById("timelineStart");
+const timelineEndEl = document.getElementById("timelineEnd");
+const timelineStatusEl = document.getElementById("timelineStatus");
 const addressInput = document.getElementById("addressInput");
 const addressSearchBtn = document.getElementById("addressSearchBtn");
 const addressResultsEl = document.getElementById("addressResults");
@@ -175,6 +181,13 @@ let state = {
   showEur: false,
   eurPrices: {},
   history: [], // [{blockNumber, builder, txCount, mevCount, privateCount, trackedCount}]
+  // block timeline (E7)
+  timelineHead: null, // newest block the timeline window ends at
+  analysisBlock: null, // analysis-slider position (backfill start)
+  intervalEnd: null, // right edge of the 100-block interval slider
+  coverage: [], // analyzed ranges within the window [{start, end}]
+  intervalActivity: new Map(), // blockNumber -> total MEV count (interval)
+  tickerMode: "history", // "history" (follow-latest) | "interval"
 };
 
 const WETH_ADDRESS = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
@@ -183,6 +196,9 @@ const MAX_HISTORY = 24;
 let liveTimer = null;
 
 function showToast(message, type = "") {
+  // anchored right under the top bar (E3)
+  const header = document.querySelector("header");
+  if (header) toastEl.style.top = `${Math.round(header.getBoundingClientRect().bottom) + 8}px`;
   toastEl.textContent = message;
   toastEl.className = `toast show ${type}`;
   clearTimeout(toastEl._timer);
@@ -264,21 +280,6 @@ function shortRelay(hostname) {
   return RELAY_SHORT_NAMES[clean] || clean;
 }
 
-function renderBlockMeta() {
-  if (state.blockNumber == null) {
-    blockMetaEl.classList.add("hidden");
-    return;
-  }
-  blockMetaEl.classList.remove("hidden");
-  const builderName = state.builder?.builder;
-  blockMetaEl.innerHTML = `
-    <span class="builder-badge" title="Decoded from the block's extraData field">
-      Builder: ${builderName ? builderName : "unknown (no graffiti)"}
-    </span>
-    <span>Fee recipient: ${addrLink(state.builder?.feeRecipient)}</span>
-  `;
-}
-
 function pushHistory(blockNumber, transactions, builder, bid) {
   const mevCount = transactions.filter((t) => t.mev.length > 0).length;
   const privateCount = transactions.filter((t) => t.mempool?.status === "private").length;
@@ -306,6 +307,10 @@ function pushHistory(blockNumber, transactions, builder, bid) {
 }
 
 function renderTicker() {
+  if (state.tickerMode === "interval") {
+    renderIntervalTicker();
+    return;
+  }
   if (state.history.length === 0) {
     tickerEl.classList.add("hidden");
     return;
@@ -332,6 +337,213 @@ function renderTicker() {
     el.addEventListener("click", () => loadBlock(Number(el.dataset.block)));
   });
   tickerEl.scrollLeft = tickerEl.scrollWidth;
+}
+
+// ---- Block timeline (E7): analysis slider + 100-block interval slider -----
+// The track spans the newest TIMELINE_SPAN blocks up to the chain head.
+// Dragging the analysis handle left starts a background backfill from that
+// height (E6); the track fills green rightward as Postgres reports coverage.
+// The interval slider scopes the ticker strip to 100 blocks; on change the
+// interval's highest-MEV block is focused.
+
+const TIMELINE_SPAN = 5000;
+const INTERVAL_SIZE = 100;
+const BACKFILL_POLL_MS = 3000;
+
+function timelineWindow() {
+  const end = state.timelineHead;
+  return { start: Math.max(0, end - TIMELINE_SPAN + 1), end };
+}
+
+function blockToFrac(block) {
+  const { start, end } = timelineWindow();
+  return Math.min(1, Math.max(0, (block - start) / Math.max(1, end - start)));
+}
+
+function fracToBlock(frac) {
+  const { start, end } = timelineWindow();
+  return Math.round(start + Math.min(1, Math.max(0, frac)) * (end - start));
+}
+
+function renderTimeline() {
+  if (state.timelineHead == null) return;
+  timelineEl.classList.remove("hidden");
+  const { start, end } = timelineWindow();
+  timelineStartEl.textContent = `#${start}`;
+  timelineEndEl.textContent = `#${end} (head)`;
+
+  timelineHandleEl.style.left = `${blockToFrac(state.analysisBlock) * 100}%`;
+  const intervalStartFrac = blockToFrac(state.intervalEnd - INTERVAL_SIZE + 1);
+  const intervalEndFrac = blockToFrac(state.intervalEnd);
+  timelineIntervalEl.style.left = `${intervalStartFrac * 100}%`;
+  timelineIntervalEl.style.width = `${Math.max(0.5, (intervalEndFrac - intervalStartFrac) * 100)}%`;
+
+  timelineCoverageEl.innerHTML = state.coverage
+    .filter((r) => r.end >= start && r.start <= end)
+    .map((r) => {
+      const a = blockToFrac(Math.max(r.start, start));
+      const b = blockToFrac(Math.min(r.end, end));
+      return `<div class="cov" style="left:${a * 100}%;width:${Math.max(0.15, (b - a) * 100)}%"></div>`;
+    })
+    .join("");
+}
+
+async function refreshCoverage() {
+  if (state.timelineHead == null) return;
+  const { start, end } = timelineWindow();
+  try {
+    const res = await fetch(`/api/analyzed-ranges?from=${start}&to=${end}`);
+    const data = await res.json();
+    state.coverage = data.ranges || [];
+    renderTimeline();
+    if (state.tickerMode === "interval") renderIntervalTicker();
+  } catch {
+    /* coverage is cosmetic - never break the page over it */
+  }
+}
+
+let backfillPollTimer = null;
+function pollBackfill() {
+  if (backfillPollTimer) return;
+  backfillPollTimer = setInterval(async () => {
+    try {
+      const res = await fetch("/api/backfill");
+      const status = await res.json();
+      if (status.running) {
+        timelineStatusEl.className = "timeline-status active";
+        timelineStatusEl.textContent = `backfilling… #${status.cursor} of #${status.targetBlock} (${status.inspected} inspected, ${status.skipped} cached${status.failed ? `, ${status.failed} failed` : ""})`;
+        await refreshCoverage();
+      } else {
+        clearInterval(backfillPollTimer);
+        backfillPollTimer = null;
+        timelineStatusEl.className = "timeline-status";
+        timelineStatusEl.textContent = status.startedAt
+          ? `backfill done (${status.inspected} inspected, ${status.skipped} cached${status.failed ? `, ${status.failed} failed` : ""})`
+          : "";
+        await refreshCoverage();
+      }
+    } catch {
+      /* keep polling */
+    }
+  }, BACKFILL_POLL_MS);
+}
+
+async function startBackfillFrom(block) {
+  try {
+    const res = await fetch("/api/backfill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fromBlock: block }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "backfill failed to start");
+    showToast(`Backfilling analysis from block ${block} to the head.`, "success");
+    pollBackfill();
+  } catch (err) {
+    showToast(`Error: ${err.message}`, "error");
+  }
+}
+
+function trackFrac(clientX) {
+  const rect = timelineTrackEl.getBoundingClientRect();
+  return (clientX - rect.left) / rect.width;
+}
+
+// analysis slider: drag, then backfill from the released position
+timelineHandleEl.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  timelineHandleEl.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    state.analysisBlock = fracToBlock(trackFrac(ev.clientX));
+    renderTimeline();
+  };
+  const up = () => {
+    timelineHandleEl.removeEventListener("pointermove", move);
+    timelineHandleEl.removeEventListener("pointerup", up);
+    if (state.analysisBlock < state.timelineHead) {
+      setLive(false);
+      startBackfillFrom(state.analysisBlock);
+    }
+  };
+  timelineHandleEl.addEventListener("pointermove", move);
+  timelineHandleEl.addEventListener("pointerup", up);
+});
+
+// interval slider: drag the 100-block window, then focus its hottest block
+timelineIntervalEl.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  timelineIntervalEl.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    state.intervalEnd = Math.max(
+      timelineWindow().start + INTERVAL_SIZE - 1,
+      fracToBlock(trackFrac(ev.clientX)),
+    );
+    renderTimeline();
+  };
+  const up = () => {
+    timelineIntervalEl.removeEventListener("pointermove", move);
+    timelineIntervalEl.removeEventListener("pointerup", up);
+    applyInterval();
+  };
+  timelineIntervalEl.addEventListener("pointermove", move);
+  timelineIntervalEl.addEventListener("pointerup", up);
+});
+
+async function applyInterval() {
+  const to = state.intervalEnd;
+  const from = to - INTERVAL_SIZE + 1;
+  state.tickerMode = "interval";
+  setLive(false);
+
+  try {
+    const res = await fetch(`/api/mev-activity?from=${from}&to=${to}`);
+    const data = await res.json();
+    state.intervalActivity = new Map((data.blocks || []).map((b) => [b.blockNumber, b.total]));
+  } catch {
+    state.intervalActivity = new Map();
+  }
+  await refreshCoverage();
+  renderIntervalTicker();
+
+  // focus the interval's highest-MEV block; ties -> newest; none -> newest
+  let best = to;
+  let bestCount = 0;
+  for (const [block, total] of state.intervalActivity) {
+    if (total > bestCount || (total === bestCount && total > 0 && block > best)) {
+      best = block;
+      bestCount = total;
+    }
+  }
+  loadBlock(best);
+}
+
+function isAnalyzed(block) {
+  return state.coverage.some((r) => block >= r.start && block <= r.end);
+}
+
+function renderIntervalTicker() {
+  const to = state.intervalEnd;
+  const from = to - INTERVAL_SIZE + 1;
+  tickerEl.classList.remove("hidden");
+  const items = [];
+  for (let block = from; block <= to; block++) {
+    const analyzed = isAnalyzed(block);
+    const activity = state.intervalActivity.get(block) || 0;
+    items.push(`
+      <div class="ticker-item ${block === state.blockNumber ? "active" : ""} ${analyzed ? "analyzed" : ""}" data-block="${block}" title="${analyzed ? "analyzed" : "not analyzed yet"}">
+        <div class="t-block">#${block}</div>
+        <div class="t-row">
+          ${activity > 0 ? `<span class="t-pill mev">${activity} MEV</span>` : `<span class="t-pill">${analyzed ? "0 MEV" : "—"}</span>`}
+        </div>
+      </div>
+    `);
+  }
+  tickerEl.innerHTML = items.join("");
+  tickerEl.querySelectorAll(".ticker-item").forEach((el) => {
+    el.addEventListener("click", () => loadBlock(Number(el.dataset.block)));
+  });
+  const active = tickerEl.querySelector(".ticker-item.active");
+  if (active) active.scrollIntoView({ block: "nearest", inline: "center" });
 }
 
 // The legend stays limited to the well-known/textbook MEV types - badges
@@ -409,7 +621,7 @@ function computeFeeTotals(transactions, bid) {
   return { priorityFeeEth, priorityFeePublicEth, builderBidEth, bidPct, bidPctOfAll };
 }
 
-function renderStats(transactions, bid) {
+function renderStats(transactions) {
   const count = (type) =>
     transactions.reduce((n, tx) => n + tx.mev.filter((m) => m.type === type).length, 0);
 
@@ -424,88 +636,25 @@ function renderStats(transactions, bid) {
   ).length;
   const cachingTx = transactions.filter((t) => t.mempool?.status === "caching").length;
 
-  const { priorityFeeEth, priorityFeePublicEth, builderBidEth, bidPct } = computeFeeTotals(
-    transactions,
-    bid,
-  );
-
-  const pctLabel = (v) =>
-    v != null
-      ? `<span class="${v >= 0 ? "profit" : "loss"}">bid ${v >= 0 ? "+" : ""}${v.toFixed(1)}%</span>`
-      : null;
-
-  const priorityFeePrivateEth =
-    sumPriorityFeeWei(transactions.filter((tx) => tx.mempool?.status === "private")) / 1e18;
-  const sumTipsEth = (txs) => txs.reduce((s, tx) => s + (tx.coinbaseTransferEth || 0), 0);
-  const tipsPublicEth = sumTipsEth(transactions.filter((tx) => tx.mempool?.status === "public"));
-  const tipsPrivateEth = sumTipsEth(transactions.filter((tx) => tx.mempool?.status === "private"));
-  // The builder's block income is all priority fees plus all coinbase tips
-  // (classified or not); the bid is what it pays the proposer for the slot.
-  const builderIncomeEth = priorityFeeEth + sumTipsEth(transactions);
-  const bidPctOfIncome =
-    builderBidEth != null && builderIncomeEth > 0
-      ? (builderBidEth / builderIncomeEth) * 100
-      : null;
-  const bidProfitable = builderBidEth != null && builderBidEth <= builderIncomeEth;
-  const money = state.showEur ? "EUR" : "ETH";
-
+  // E4 (amended): transactions first, then private; fees/tips/bid live in
+  // the income chart tab (E5)
   const cards = [
     { label: "Transactions", value: transactions.length, accent: "total" },
-    { label: "DEX swaps", value: swaps, accent: "total" },
-    {
-      label: "Arbs / sandwiches / liquidations",
-      value: 0,
-      accent: "mev",
-      raw: `${arbitrages}/${sandwiches}/${liquidations}`,
-    },
     cachingTx > 0
       ? {
           // watcher warming up: absence of sightings proves nothing yet
-          label: "Watched / private tx",
+          label: "Private tx",
           value: 0,
           accent: "mev",
           raw: "caching",
         }
       : trackedTx > 0
-        ? {
-            label: "Watched / private tx",
-            value: 0,
-            accent: "total",
-            raw: `<span class="profit">${trackedTx}</span>/<span class="loss">${privateTx}</span>`,
-          }
-        : { label: "Watched / private tx (not tracked)", value: 0, accent: "total", raw: "n/a" },
-    {
-      label: `Priority fees — public tx only (${money})`,
-      value: priorityFeePublicEth,
-      accent: "total",
-      format: (v) => fmtEth(v),
-      sub: pctLabel(bidPct),
-    },
-    {
-      label: `Priority fees — private tx only (${money})`,
-      value: priorityFeePrivateEth,
-      accent: "total",
-      format: (v) => fmtEth(v),
-      sub: pctLabel(pctDiff(builderBidEth, priorityFeePrivateEth)),
-    },
-    {
-      label: `Builder tips public / private (${money})`,
-      value: 0,
-      accent: "total",
-      raw: `${fmtEth(tipsPublicEth)} / ${fmtEth(tipsPrivateEth)}`,
-    },
-    builderBidEth != null
-      ? {
-          label: `Builder bid (${money})${bid?.relay ? ` — via ${shortRelay(bid.relay)}` : ""}`,
-          value: 0,
-          accent: "total",
-          raw: `<span class="${bidProfitable ? "profit" : "loss"}">${fmtEth(builderBidEth)}</span>`,
-          sub:
-            bidPctOfIncome != null
-              ? `${bidPctOfIncome.toFixed(1)}% of priority fees + tips`
-              : null,
-        }
-      : { label: `Builder bid (${money})`, value: 0, accent: "total", raw: "n/a" },
+        ? { label: "Private tx", value: privateTx, accent: "private" }
+        : { label: "Private tx (not tracked)", value: 0, accent: "total", raw: "n/a" },
+    { label: "DEX swaps", value: swaps, accent: "total" },
+    { label: "Arbitrages", value: arbitrages, accent: "blue" },
+    { label: "Sandwiches", value: sandwiches, accent: "blue" },
+    { label: "Liquidations", value: liquidations, accent: "blue" },
   ];
 
   statsEl.innerHTML = cards
@@ -524,6 +673,163 @@ function renderStats(transactions, bid) {
     if (c.raw) return;
     animateCount(document.getElementById(`stat-${i}`), c.value, c.format || ((v) => Math.round(v)));
   });
+}
+
+// ---- Stat-visualization column (E5): block income vs builder bid ----------
+// One persistent SVG; rects transition (CSS) between blocks instead of the
+// chart being rebuilt, so block changes animate.
+
+const INCOME_SEGMENTS = [
+  { key: "feesPublic", label: "Priority fees — public", color: "var(--green)" },
+  { key: "feesPrivate", label: "Priority fees — private", color: "var(--red)" },
+  { key: "feesOther", label: "Priority fees — untracked", color: "var(--muted)" },
+  { key: "tipsPublic", label: "Builder tips — public", color: "var(--teal)" },
+  { key: "tipsPrivate", label: "Builder tips — private", color: "var(--orange)" },
+  { key: "tipsOther", label: "Builder tips — untracked", color: "var(--pink)" },
+];
+
+const CHART = { width: 260, top: 14, axisY: 158, barWidth: 62, incomeX: 40, bidX: 158 };
+
+function computeIncomeBreakdown(transactions, bid) {
+  const byStatus = (status) => transactions.filter((tx) => tx.mempool?.status === status);
+  const fees = (txs) => sumPriorityFeeWei(txs) / 1e18;
+  const tips = (txs) => txs.reduce((s, tx) => s + (tx.coinbaseTransferEth || 0), 0);
+
+  const feesPublic = fees(byStatus("public"));
+  const feesPrivate = fees(byStatus("private"));
+  const feesOther = Math.max(0, fees(transactions) - feesPublic - feesPrivate);
+  const tipsPublic = tips(byStatus("public"));
+  const tipsPrivate = tips(byStatus("private"));
+  const tipsOther = Math.max(0, tips(transactions) - tipsPublic - tipsPrivate);
+
+  // the builder's block income is all priority fees plus all coinbase tips;
+  // the bid is what it pays the proposer for the slot
+  const income = fees(transactions) + tips(transactions);
+  const bidEth = bid?.valueWei != null ? Number(bid.valueWei) / 1e18 : null;
+  return { feesPublic, feesPrivate, feesOther, tipsPublic, tipsPrivate, tipsOther, income, bidEth };
+}
+
+let chartInitialized = false;
+function initIncomeChart() {
+  if (chartInitialized) return;
+  chartInitialized = true;
+  const ns = "http://www.w3.org/2000/svg";
+  const make = (tag, attrs) => {
+    const el = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    return el;
+  };
+
+  for (const segment of INCOME_SEGMENTS) {
+    const rect = make("rect", {
+      id: `seg-${segment.key}`,
+      x: CHART.incomeX,
+      width: CHART.barWidth,
+      y: CHART.axisY,
+      height: 0,
+      fill: segment.color,
+    });
+    incomeChartEl.appendChild(rect);
+  }
+  incomeChartEl.appendChild(
+    make("rect", {
+      id: "seg-bid",
+      x: CHART.bidX,
+      width: CHART.barWidth,
+      y: CHART.axisY,
+      height: 0,
+      fill: "var(--green)",
+    }),
+  );
+  incomeChartEl.appendChild(
+    make("line", {
+      x1: 8, x2: CHART.width - 8, y1: CHART.axisY, y2: CHART.axisY,
+      stroke: "var(--border)", "stroke-width": 1,
+    }),
+  );
+  const incomeTotal = make("text", {
+    id: "total-income", class: "viz-bar-total",
+    x: CHART.incomeX + CHART.barWidth / 2, y: CHART.top - 3, "text-anchor": "middle",
+  });
+  const bidTotal = make("text", {
+    id: "total-bid", class: "viz-bar-total",
+    x: CHART.bidX + CHART.barWidth / 2, y: CHART.top - 3, "text-anchor": "middle",
+  });
+  const incomeLabel = make("text", {
+    class: "viz-bar-label",
+    x: CHART.incomeX + CHART.barWidth / 2, y: CHART.axisY + 14, "text-anchor": "middle",
+  });
+  incomeLabel.textContent = "block income";
+  const bidLabel = make("text", {
+    class: "viz-bar-label",
+    x: CHART.bidX + CHART.barWidth / 2, y: CHART.axisY + 14, "text-anchor": "middle",
+  });
+  bidLabel.textContent = "builder bid";
+  for (const el of [incomeTotal, bidTotal, incomeLabel, bidLabel]) incomeChartEl.appendChild(el);
+}
+
+function renderIncomeChart(transactions, bid) {
+  initIncomeChart();
+
+  const b = computeIncomeBreakdown(transactions, bid);
+  const scaleMax = Math.max(b.income, b.bidEth ?? 0, 1e-9);
+  const px = (eth) => (eth / scaleMax) * (CHART.axisY - CHART.top - 16);
+
+  let y = CHART.axisY;
+  for (const segment of INCOME_SEGMENTS) {
+    const h = px(b[segment.key]);
+    y -= h;
+    const rect = document.getElementById(`seg-${segment.key}`);
+    rect.setAttribute("y", y);
+    rect.setAttribute("height", h);
+  }
+
+  const bidRect = document.getElementById("seg-bid");
+  const bidH = b.bidEth != null ? px(b.bidEth) : 0;
+  bidRect.setAttribute("y", CHART.axisY - bidH);
+  bidRect.setAttribute("height", bidH);
+  const bidProfitable = b.bidEth != null && b.bidEth <= b.income;
+  bidRect.setAttribute("fill", bidProfitable ? "var(--green)" : "var(--red)");
+
+  document.getElementById("total-income").textContent = fmtEth(b.income);
+  document.getElementById("total-bid").textContent = b.bidEth != null ? fmtEth(b.bidEth) : "n/a";
+
+  const money = state.showEur ? "EUR" : "ETH";
+  const segmentRows = INCOME_SEGMENTS.filter((segment) => b[segment.key] > 0)
+    .map(
+      (segment) => `
+        <div class="legend-row">
+          <span class="legend-swatch" style="background:${segment.color}"></span>
+          <span class="legend-name">${segment.label}</span>
+          <span class="legend-value">${fmtEth(b[segment.key])} ${money}</span>
+        </div>`,
+    )
+    .join("");
+  const bidRow =
+    b.bidEth != null
+      ? `
+        <div class="legend-row">
+          <span class="legend-swatch" style="background:${bidProfitable ? "var(--green)" : "var(--red)"}"></span>
+          <span class="legend-name">Builder bid${bid?.relay ? ` — via ${shortRelay(bid.relay)}` : ""}</span>
+          <span class="legend-value ${bidProfitable ? "profit" : "loss"}">${fmtEth(b.bidEth)} ${money}${
+            b.income > 0 ? ` (${((b.bidEth / b.income) * 100).toFixed(1)}%)` : ""
+          }</span>
+        </div>`
+      : `
+        <div class="legend-row">
+          <span class="legend-swatch" style="background:var(--muted)"></span>
+          <span class="legend-name">Builder bid</span>
+          <span class="legend-value">n/a</span>
+        </div>`;
+  const builderName = state.builder?.builder;
+  incomeLegendEl.innerHTML = `
+    ${segmentRows}
+    ${bidRow}
+    <div class="legend-builder" title="Decoded from the block's extraData field">
+      Builder: ${builderName ? builderName : "unknown (no graffiti)"}<br/>
+      Fee recipient: ${addrLink(state.builder?.feeRecipient)}
+    </div>
+  `;
 }
 
 function renderMevDetail(m) {
@@ -849,16 +1155,18 @@ async function loadBlock(blockNumber, { silent = false } = {}) {
     state.builder = data.builder;
     state.bid = data.bid;
     state.expanded.clear();
-    blockInput.value = data.blockNumber;
+    currentBlockEl.textContent = `#${data.blockNumber}`;
 
     pushHistory(data.blockNumber, data.transactions, data.builder, data.bid);
 
     await refreshEurPrices();
 
-    renderBlockMeta();
-    renderStats(state.transactions, state.bid);
+    renderStats(state.transactions);
+    renderIncomeChart(state.transactions, state.bid);
+    renderMempoolBlock();
     renderTable();
     renderTicker();
+    renderTimeline();
 
     showToast(
       data.alreadyInspected
@@ -886,6 +1194,17 @@ async function pollRpcStatus() {
     rpcDot.className = "dot online";
     rpcText.textContent = `mainnet · head #${latest}`;
 
+    // timeline window ends at the head; in follow-latest mode both sliders
+    // stay pinned right (current behavior preserved, E7)
+    const firstHead = state.timelineHead == null;
+    state.timelineHead = latest;
+    if (firstHead || state.live) {
+      state.analysisBlock = latest;
+      state.intervalEnd = latest;
+    }
+    renderTimeline();
+    if (firstHead) refreshCoverage();
+
     if (state.live && latest !== state.blockNumber) {
       loadBlock(latest, { silent: true });
     }
@@ -895,15 +1214,6 @@ async function pollRpcStatus() {
   }
 }
 
-loadBtn.addEventListener("click", () => {
-  if (blockInput.value) loadBlock(Number(blockInput.value));
-});
-
-latestBtn.addEventListener("click", async () => {
-  const latest = await fetchLatestBlockNumber();
-  loadBlock(latest);
-});
-
 prevBtn.addEventListener("click", () => {
   if (state.blockNumber != null) loadBlock(state.blockNumber - 1);
 });
@@ -911,17 +1221,32 @@ nextBtn.addEventListener("click", () => {
   if (state.blockNumber != null) loadBlock(state.blockNumber + 1);
 });
 
-blockInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && blockInput.value) loadBlock(Number(blockInput.value));
-});
+// follow-latest is an icon box-toggle in the top bar (same pattern as the
+// MEV-only/EUR/theme toggles); re-enabling pins both timeline sliders right
+// and restores the recently-viewed ticker (E7)
+function setLive(on) {
+  state.live = on;
+  liveToggleBtn.classList.toggle("active", on);
+  if (on) {
+    state.tickerMode = "history";
+    if (state.timelineHead != null) {
+      state.analysisBlock = state.timelineHead;
+      state.intervalEnd = state.timelineHead;
+    }
+    renderTimeline();
+    renderTicker();
+  }
+}
 
-liveToggle.addEventListener("change", () => {
-  state.live = liveToggle.checked;
+liveToggleBtn.addEventListener("click", () => {
+  setLive(!state.live);
   showToast(state.live ? "Following the latest block." : "Stopped following.", "");
 });
 
-onlyMevToggle.addEventListener("change", () => {
-  state.onlyMev = onlyMevToggle.checked;
+// E2: icon box-toggle in the top bar (same pattern as the EUR/theme toggles)
+onlyMevToggle.addEventListener("click", () => {
+  state.onlyMev = !state.onlyMev;
+  onlyMevToggle.classList.toggle("active", state.onlyMev);
   renderTable();
 });
 
@@ -953,7 +1278,8 @@ async function refreshEurPrices() {
 }
 
 function rerenderAfterCurrencyChange() {
-  renderStats(state.transactions, state.bid);
+  renderStats(state.transactions);
+  if (state.blockNumber != null) renderIncomeChart(state.transactions, state.bid);
   renderTable();
 }
 
@@ -966,10 +1292,6 @@ eurToggle.addEventListener("click", async () => {
     await refreshEurPrices();
   }
   rerenderAfterCurrencyChange();
-});
-
-legendBtn.addEventListener("click", () => {
-  legendEl.classList.toggle("hidden");
 });
 
 const ACTIVITY_LABELS = {
@@ -1227,16 +1549,13 @@ async function loadBuilderStats() {
   }
 }
 
-// ---- Mempool statistics tab (public vs private order flow) ----
-
-const MP_MAX_CHART_BLOCKS = 60;
-
-function mpTrackedCount(b) {
-  return b.publicCount + b.privateCount;
-}
+// ---- Mempool tab: single-block order-flow analysis --------------------
+// (amendment to E4/E8: the old cross-block aggregate moved out in favor of
+// a detailed look at the block currently loaded; /api/mempool-stats still
+// exists for programmatic use)
 
 // The private premium: how much more private order flow paid per gas than
-// public flow (in %), for one block or for the overall summary.
+// public flow (in %).
 function mpPrivatePremiumPct(stat) {
   if (stat.avgTipPublicGwei == null || stat.avgTipPublicGwei <= 0) return null;
   if (stat.avgTipPrivateGwei == null) return null;
@@ -1247,66 +1566,54 @@ function fmtPct(v) {
   return `${v >= 0 ? "+" : ""}${v.toFixed(0)}%`;
 }
 
-// Stacked 100%-share bars, one per block: green = public, red = private.
-// Clicking a bar loads that block in the inspection view above.
-function mempoolShareChartSvg(blocks) {
-  const slot = 14;
-  const barWidth = 10;
-  const chartHeight = 120;
-  const labelHeight = 14;
-  const width = blocks.length * slot;
-
-  const bars = blocks
-    .map((b, i) => {
-      const tracked = mpTrackedCount(b);
-      if (tracked === 0) return "";
-      const privateHeight = (b.privateCount / tracked) * chartHeight;
-      const x = i * slot;
-      const premium = mpPrivatePremiumPct(b);
-      const title = [
-        `#${b.blockNumber} — ${b.builder || "unknown builder"}`,
-        `${b.publicCount} public / ${b.privateCount} private (${((b.privateCount / tracked) * 100).toFixed(0)}% private)`,
-        premium != null ? `private premium: ${fmtPct(premium)} gwei/gas vs public` : null,
-        `click to inspect this block`,
-      ]
-        .filter(Boolean)
-        .join("\n");
-      return `<g class="mp-bar" data-block="${b.blockNumber}"><title>${title}</title>
-        <rect x="${x}" y="0" width="${barWidth}" height="${privateHeight.toFixed(1)}" fill="var(--red)"></rect>
-        <rect x="${x}" y="${privateHeight.toFixed(1)}" width="${barWidth}" height="${(chartHeight - privateHeight).toFixed(1)}" fill="var(--green)"></rect>
-      </g>`;
-    })
-    .join("");
-
-  const first = blocks[0].blockNumber;
-  const last = blocks[blocks.length - 1].blockNumber;
-  const labels = `
-    <text x="0" y="${chartHeight + 11}" fill="var(--muted)" font-size="9">#${first}</text>
-    ${blocks.length > 1 ? `<text x="${width - barWidth}" y="${chartHeight + 11}" fill="var(--muted)" font-size="9" text-anchor="end">#${last}</text>` : ""}
-  `;
-
-  return `<svg viewBox="0 0 ${width} ${chartHeight + labelHeight}" preserveAspectRatio="none" style="max-width:${width * 2}px">${bars}${labels}</svg>`;
+// Effective builder payment per gas in gwei for a set of transactions:
+// priority fees plus direct coinbase transfers, spread over the gas used.
+function mpEffectiveGwei(txs) {
+  const gas = txs.reduce((s, tx) => s + (Number(tx.gasUsed) || 0), 0);
+  if (gas === 0) return null;
+  const paidWei =
+    sumPriorityFeeWei(txs) + txs.reduce((s, tx) => s + (tx.coinbaseTransferEth || 0), 0) * 1e18;
+  return paidWei / gas / 1e9;
 }
 
-function renderMempoolStats(data) {
-  const blocks = (data.blocks || []).filter((b) => mpTrackedCount(b) > 0).slice(-MP_MAX_CHART_BLOCKS);
-  const summary = data.summary || {};
-  const tracked = (summary.publicCount || 0) + (summary.privateCount || 0);
+const MP_STATUS_META = {
+  public: { cls: "public", color: "var(--green)", label: "public" },
+  private: { cls: "private", color: "var(--red)", label: "private" },
+  caching: { cls: "caching", color: "var(--orange)", label: "caching (watcher warming up)" },
+  unknown: { cls: "unknown", color: "var(--muted)", label: "not tracked" },
+};
 
-  if (tracked === 0 || blocks.length === 0) {
-    mempoolStatsResultsEl.innerHTML = `<div class="empty-state">No mempool sightings recorded yet. Classifications only happen for blocks viewed live (within the watcher's 2-minute window) — leave "Follow latest block" on for a while with a healthy RPC node and this fills up.</div>`;
+function renderMempoolBlock() {
+  if (state.blockNumber == null) {
+    mempoolStatsResultsEl.innerHTML = `<div class="empty-state">Load a block to see its order-flow breakdown.</div>`;
     return;
   }
 
-  const privateSharePct = (summary.privateCount / tracked) * 100;
+  const txs = state.transactions;
+  const byStatus = (status) => txs.filter((tx) => (tx.mempool?.status || "unknown") === status);
+  const publicTxs = byStatus("public");
+  const privateTxs = byStatus("private");
+  const cachingTxs = byStatus("caching");
+  const tracked = publicTxs.length + privateTxs.length;
+
+  if (txs.length === 0) {
+    mempoolStatsResultsEl.innerHTML = `<div class="empty-state">Block ${state.blockNumber} has no transactions.</div>`;
+    return;
+  }
+
+  const avgTipPublicGwei = mpEffectiveGwei(publicTxs);
+  const avgTipPrivateGwei = mpEffectiveGwei(privateTxs);
+  const premiumPct = mpPrivatePremiumPct({ avgTipPublicGwei, avgTipPrivateGwei });
   const fmtGwei = (v) => (v != null ? `${v.toFixed(2)} gwei` : "n/a");
-  const premiumPct = mpPrivatePremiumPct(summary);
 
   const cards = [
-    { value: tracked, label: "classified transactions" },
-    { value: `${privateSharePct.toFixed(1)}%`, label: `private share (${summary.privateCount} of ${tracked})` },
-    { value: fmtGwei(summary.avgTipPublicGwei), label: "avg price per gas — public" },
-    { value: fmtGwei(summary.avgTipPrivateGwei), label: "avg price per gas — private" },
+    { value: `${tracked} of ${txs.length}`, label: `tx with a mempool verdict (#${state.blockNumber})` },
+    {
+      value: tracked > 0 ? `${((privateTxs.length / tracked) * 100).toFixed(1)}%` : "n/a",
+      label: `private share (${privateTxs.length} of ${tracked} tracked)`,
+    },
+    { value: fmtGwei(avgTipPublicGwei), label: "price per gas — public" },
+    { value: fmtGwei(avgTipPrivateGwei), label: "price per gas — private" },
   ];
   if (premiumPct != null) {
     cards.push({
@@ -1326,37 +1633,36 @@ function renderMempoolStats(data) {
     )
     .join("");
 
+  // one cell per transaction in block order - private bundles cluster
+  // visibly (top-of-block MEV, direct-to-builder flow)
+  const strip = txs
+    .map((tx, i) => {
+      const meta = MP_STATUS_META[tx.mempool?.status] || MP_STATUS_META.unknown;
+      const mev = tx.mev.length > 0 ? ` · ${tx.mev.map((m) => (MEV_INFO[m.type] || { label: m.type }).label).join(", ")}` : "";
+      return `<span class="mp-cell ${meta.cls}${tx.mev.length > 0 ? " has-mev" : ""}" title="#${i} ${shortHash(tx.hash)} — ${meta.label}${mev}"></span>`;
+    })
+    .join("");
+
   const legendHtml = `
     <div class="mp-chart-legend">
-      <span><span class="legend-swatch" style="background:var(--green)"></span> public</span>
-      <span><span class="legend-swatch" style="background:var(--red)"></span> private</span>
+      ${Object.values(MP_STATUS_META)
+        .map((m) => `<span><span class="legend-swatch" style="background:${m.color}"></span> ${m.label}</span>`)
+        .join("")}
+      <span><span class="legend-swatch mp-cell-mev-swatch"></span> detected MEV</span>
     </div>`;
+
+  const cachingNote =
+    cachingTxs.length > 0
+      ? `<div class="explore-hint">${cachingTxs.length} transaction${cachingTxs.length === 1 ? "" : "s"} still counted as "caching" — the watcher started less than 2 minutes before this block, so their absence from the mempool proves nothing yet.</div>`
+      : "";
 
   mempoolStatsResultsEl.innerHTML = `
     <div class="mp-summary">${summaryHtml}</div>
+    <div class="mp-chart-title">Order flow in block position order (hover a cell for the transaction)</div>
+    <div class="mp-strip">${strip}</div>
     ${legendHtml}
-    <div class="mp-chart-title">Order-flow share per block (${blocks.length} most recent classified blocks — click a bar to inspect that block)</div>
-    <div class="mp-chart">${mempoolShareChartSvg(blocks)}</div>
+    ${cachingNote}
   `;
-
-  mempoolStatsResultsEl.querySelectorAll(".mp-bar").forEach((el) => {
-    el.addEventListener("click", () => {
-      loadBlock(Number(el.dataset.block));
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    });
-  });
-}
-
-async function loadMempoolStats() {
-  mempoolStatsResultsEl.innerHTML = `<div class="empty-state">Loading…</div>`;
-  try {
-    const res = await fetch("/api/mempool-stats");
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "failed");
-    renderMempoolStats(data);
-  } catch {
-    mempoolStatsResultsEl.innerHTML = `<div class="empty-state">Failed to load mempool statistics.</div>`;
-  }
 }
 
 const loadedTabs = new Set();
@@ -1367,10 +1673,10 @@ document.querySelectorAll(".explore-tab").forEach((tab) => {
     tab.classList.add("active");
     document.getElementById(`panel-${tab.dataset.tab}`).classList.remove("hidden");
 
-    // mempool stats grow with every live block, so refresh on every visit;
-    // the other tabs load once per session
+    // the mempool tab reflects the currently loaded block, so re-render on
+    // every visit; the multi-block tabs load once per session
     if (tab.dataset.tab === "mempool") {
-      loadMempoolStats();
+      renderMempoolBlock();
       return;
     }
     if (!loadedTabs.has(tab.dataset.tab)) {
@@ -1409,10 +1715,21 @@ buildLegend();
 pollRpcStatus();
 liveTimer = setInterval(pollRpcStatus, 12000);
 
-// ?block=N deep links (e.g. from the trace view's "inspect this block" hint)
+// resume progress display if a backfill is already running (E6 queue state
+// lives in the API; coverage lives in Postgres - both survive reloads)
+fetch("/api/backfill")
+  .then((res) => res.json())
+  .then((status) => {
+    if (status.running) pollBackfill();
+  })
+  .catch(() => {});
+
+// ?block=N deep links (e.g. from the trace view's "inspect this block" hint);
+// with the number input gone this is also the precise-navigation fallback,
+// so a deep link must not be yanked away by follow-latest
 const initialBlockParam = Number(new URLSearchParams(window.location.search).get("block"));
 if (Number.isInteger(initialBlockParam) && initialBlockParam > 0) {
-  blockInput.value = String(initialBlockParam);
+  setLive(false);
   loadBlock(initialBlockParam);
 } else {
   fetchLatestBlockNumber()

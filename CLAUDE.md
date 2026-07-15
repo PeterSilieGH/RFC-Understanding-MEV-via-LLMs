@@ -62,6 +62,7 @@ The MEV pipeline is **decode, then pattern-match** (see `mev-monitor/README.md` 
 2. mev-inspect-py replays a block's traces on demand (first request for a block triggers a `docker run`, deduped in-memory) and writes decoded facts (`classified_traces`, `swaps`, `liquidations`, …) plus its own pattern-matches (`arbitrages`, `sandwiches`, …) to Postgres.
 3. The explorer layers five additional read-only detectors over those tables and merges everything into one `mev[]` array per transaction. Detectors never write to mev-inspect-py's tables.
 4. App-owned cache tables (`block_builders`, `block_bids`) hold builder graffiti and MEV-Boost relay bids.
+5. Bulk coverage comes from explorer-api's background backfill queue (`apps/explorer-api/src/backfill.ts`): `POST /api/backfill {fromBlock[,toBlock]}` walks ascending to the head, strictly sequential through the same inspect dedupe, skip-on-error with cooldown; the newest POST stops and replaces a running walk. Coverage (`GET /api/analyzed-ranges`) is derived from the Postgres `blocks` table, so it survives restarts; `GET /api/mev-activity` gives per-block MEV counts. The explorer-web timeline (analysis slider + 100-block interval slider) drives these.
 
 Quirk worth knowing: mev-inspect-py's USD-summary step throws without a configured price feed; the inspector treats that failure as success when the block row exists (`mev-monitor/lib/inspector.js`).
 
