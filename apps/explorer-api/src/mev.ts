@@ -212,6 +212,10 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
         type: "sandwiched_victim",
         sandwichId: row.id,
         sandwicherAddress: row.sandwicher_address,
+        // let a victim's page resolve the whole incident (ADR-008 workspace)
+        frontrunTxHash: row.frontrun_swap_transaction_hash,
+        backrunTxHash: row.backrun_swap_transaction_hash,
+        victimTxHashes: victims,
       });
     }
   }

@@ -13,6 +13,22 @@ const provider = new ethers.JsonRpcProvider(config.RPC_URL);
 // hanging forever - fail instead so clients see an error, not a stalled tab.
 const TRACE_TIMEOUT_MS = 60_000;
 
+// Traces are immutable once mined - cache the parsed call tree in memory.
+const traceCache = new Map<string, DebugTransactionCall>();
+const TRACE_CACHE_MAX = 200;
+
+export async function getTraceCached(txHash: string): Promise<DebugTransactionCall> {
+  const cached = traceCache.get(txHash);
+  if (cached) return cached;
+  const trace = await getDebugTrace(txHash);
+  if (traceCache.size >= TRACE_CACHE_MAX) {
+    const oldest = traceCache.keys().next().value;
+    if (oldest) traceCache.delete(oldest);
+  }
+  traceCache.set(txHash, trace);
+  return trace;
+}
+
 export async function getDebugTrace(transactionHash: string): Promise<DebugTransactionCall> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

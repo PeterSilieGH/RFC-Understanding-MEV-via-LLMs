@@ -111,7 +111,13 @@ function AllProjects(props: { search: string }) {
     }
   }, [selectedIndex, columnCount])
 
-  const filtered = useFilteredProjects(result.data, props.search)
+  // DIVERGENCE(mev): synthetic per-incident trace-<hash8> projects (ADR-008)
+  // are disposable caches created by trace-api - hide them from the list
+  const visibleProjects = useMemo(
+    () => result.data?.filter((p) => !p.name.startsWith('trace-')),
+    [result.data],
+  )
+  const filtered = useFilteredProjects(visibleProjects, props.search)
 
   const { favoriteList, otherList } = useMemo(() => {
     const favoriteList = filtered.filter((x) => favorites.includes(x.name))

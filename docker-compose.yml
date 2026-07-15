@@ -98,9 +98,19 @@ services:
       context: .
       dockerfile: apps/trace-api/Dockerfile
     network_mode: host
+    # same uid as disco-api: synthetic trace-<hash8> project configs (ADR-008)
+    # are written into the bind-mounted submodule projects dir and must land
+    # on the host owned by the user, untracked like UI-created projects
+    user: "${DISCO_UID:-1000}:${DISCO_GID:-1000}"
     env_file:
       - path: .env
         required: false
+    environment:
+      DISCOVERY_PROJECTS_DIR: /projects
+    volumes:
+      - ./l2beat/packages/config/src/projects:/projects
+    depends_on:
+      - disco-api
 
   # DiscoUI backend: l2b ui from the pinned l2beat submodule via its own
   # Dockerfile (heavy first build - the whole l2beat monorepo). The image's
@@ -132,12 +142,17 @@ services:
       # bound the sockets discovery may hold open: the shared RPC node caps
       # concurrent connections and unbounded `l2b discover` runs starve every
       # other service. Inherited by spawned l2b children.
-      NODE_OPTIONS: --require /app/limit-rpc-sockets.cjs
+      NODE_OPTIONS: --require /app/limit-rpc-sockets.cjs --require /app/bound-getlogs.cjs
       RPC_MAX_SOCKETS: ${RPC_MAX_SOCKETS:-1000}
+      # the node has no log index (a single 100k-block eth_getLogs chunk
+      # takes ~11s idle), so proxy upgrade-history scans are bounded to the
+      # recent past or trace-workspace discovery runs never finish (ADR-008)
+      RPC_GETLOGS_MAX_BLOCKS: ${RPC_GETLOGS_MAX_BLOCKS:-1000000}
     volumes:
       - ./l2beat/packages/config/src/projects:/app/packages/config/src/projects
       - ./l2beat/packages/config/cache:/app/packages/config/cache
       - ./scripts/limit-rpc-sockets.cjs:/app/limit-rpc-sockets.cjs:ro
+      - ./scripts/bound-getlogs.cjs:/app/bound-getlogs.cjs:ro
     tmpfs:
       - /app/packages/protocolbeat/build
     command:

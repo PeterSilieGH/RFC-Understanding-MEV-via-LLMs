@@ -34,6 +34,64 @@ run time and RPC request count. Everything downstream assumes this works;
 if no knob bounds the run acceptably, revisit ADR-008's synthetic-project
 decision before proceeding.
 
+#### T1 findings (2026-07-14, spike run — go, pending two verifications)
+
+Knobs confirmed in `packages/discovery` (`config/StructureConfig.ts`,
+`engine/shouldSkip.ts`): **`maxDepth: 0` + all trace addresses as
+`initialAddresses`** is the bounded run. Initial addresses are analyzed at
+depth 0; relatives are rejected in `shouldSkip()` *before any RPC work*
+(`depth 1 > MAX (0)`), so nothing recursive happens. `maxAddresses` (default
+100) is the backstop. Proxy resolution still runs per initial address (it
+happens inside `AddressAnalyzer.analyze`, not via relatives).
+
+Spike incident: sandwich at block 25531759, front-run
+`0x74795f51…` / victim `0xe60e7c16…` / back-run `0x963b48ae…`; 10 unique
+`to_address`es across all three legs' `classified_traces`. Hand-written
+config: `l2beat/packages/config/src/projects/trace-74795f51/config.jsonc`
+(untracked submodule file, same class as UI-created projects — never
+commit). Run via the container shim:
+`docker exec …disco-api-1 /tmp/bin/l2b discover trace-74795f51 --stats`
+(`--stats` = provider call counts).
+
+Measured (cold-ish; discovery cache already held 40–63% of
+bytecode/source/deployment entries from earlier project runs):
+
+- **Wall time 10.6 s** for 10 contracts, exit clean, `discovered.json`
+  (40 kB) + `diffHistory.md` written.
+- **Low-level RPC ≈ 54 requests** (CALL 16, GET_STORAGE 20, GET_BYTECODE 11,
+  GET_TRANSACTION 6, GET_BLOCK 6, block-at-timestamp 1) — multicall batching
+  collapsed 145 high-level CALLs into 16 (avg batch 9). GET_SOURCE ×6 is
+  Etherscan, not the RPC node. Negligible load; no socket pressure.
+- Naming works: PoolManager, UniversalRouter, UniswapV2Router02, 2×
+  UniswapV2Pair, UniswapV3Pool, XENCrypto, WETH, USDT resolved; the one
+  unnamed address (`0x1f2F10…`) is the unverified MEV bot contract.
+- disco-api serves it: project listed in `GET /api/projects` (confirms T2's
+  HomePage filter is needed), `GET /api/projects/trace-74795f51` returns a
+  proper `ApiProjectResponse` with named initialContracts + fields.
+- Benign error: UniswapV3Pool `observations` field → "Too many values" (array
+  handler limit); does not block output.
+
+Both open checks resolved (2026-07-15):
+
+1. **Code works.** The 400 was a checksum typo in the hand-built URL —
+   `ChainSpecificAddress` validates EIP-55 casing. With the address taken
+   verbatim from the project response, `GET …/code/eth:0x7a250d…488D`
+   returns the verified `UniswapV2Router02.sol` source (no `--save-sources`
+   needed; fetched on demand / from cache). **Consequence for T3/T5:** when
+   translating our lowercase trace addresses into panel selections, always
+   map to the checksummed address the project API emitted (lowercase
+   comparison), never construct `eth:0x…` by prefixing.
+2. **Preview works** — the earlier "empty" reading probed the wrong JSON
+   shape. Actual payload: `contractsPerChain` lists all 10 contracts with
+   names; `permissionsPerChain` is `[]` because permission modeling is
+   template/field-driven and DeFi routers/pools match no l2beat template.
+   The incident dossier is therefore a named contract list plus
+   upgradability for proxies; role/actor detail appears only when templates
+   match. Caveat, not blocker — noted for ADR-008's Preview framing.
+
+Verdict: **GO** — synthetic project, bounded run, naming, Code and Preview
+all verified end-to-end; T2 can start.
+
 ### T2 — Synthetic project lifecycle (M)
 
 Given a tx hash: resolve the incident (per-tx MEV facts → `counterpartTxHash`
@@ -44,6 +102,42 @@ discovery, and report status. Placement: a small orchestration endpoint in
 disco-api's existing project/terminal endpoints; the frontend polls status.
 Exclude `trace-*` from the home page project list (`DIVERGENCE(mev)` filter
 in `HomePage.tsx`).
+
+#### T2 findings (2026-07-15, implemented and verified)
+
+Implemented as designed, with three notable deltas:
+
+- **Canonical project naming**: `trace-<hash8>` uses the *lexicographically
+  smallest* leg hash, not the deep-linked one, so front-run, victim and
+  back-run links resolve to one shared project. To make a victim's page
+  resolvable at all, explorer-api's `sandwiched_victim` entry now also
+  carries `frontrunTxHash` / `backrunTxHash` / `victimTxHashes`.
+- **disco-api's terminal endpoint requires `devMode=true|false`** as an
+  explicit query param (`discoverQuerySchema`, `main.ts:67`).
+- **Full-history `eth_getLogs` scans had to be bounded**
+  (`scripts/bound-getlogs.cjs`, preloaded via NODE_OPTIONS like the socket
+  limiter). Proxy detection reconstructs upgrade history by scanning logs
+  from deployment to head (`pastUpgrades.ts`, `Eip2535Proxy`); the node has
+  no log index — a single idle 100k-block chunk measured 11.4s, so USDC's
+  ~19M-block history alone would need ~35 min and times out entirely under
+  discovery's parallelism. The preload clamps every `eth_getLogs` to the
+  last `RPC_GETLOGS_MAX_BLOCKS` (default 1M) blocks. Consequence:
+  `$pastUpgrades`/`$upgradeCount` only cover that window; implementation +
+  admin resolution are storage reads and stay accurate (verified: USDC →
+  "USD Coin Token", `ZeppelinOS proxy`). With the bound, the 18-address
+  sandwich workspace (block 25531725, 3 legs) discovers in **~50 s**;
+  repeats serve from disk.
+- Verified end-to-end: `GET /api/traces/:txHash/workspace` →
+  discovering→ready; victim hash resolves the same project without a second
+  run; `trace-*` hidden from the home page while still served by the API.
+
+**Known weakness (orphaned runs)**: disco-api's `executeTerminalCommand`
+spawns `l2b discover` via a shell and `proc.kill()` on SSE close kills only
+the shell — an aborted/timed-out run leaves the discovery child running and
+holding RPC sockets (observed 2026-07-15: two orphans saturated the node's
+connection cap; symptom per [rpc-node-connection-cap] memory). Remedy:
+`docker compose restart disco-api`. T7's Kill button inherits this; consider
+a kill-by-project helper when building T7.
 
 ### T3 — Workspace shell and routing (M)
 

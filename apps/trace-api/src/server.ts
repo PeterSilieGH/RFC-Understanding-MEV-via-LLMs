@@ -2,26 +2,11 @@ import { loadConfig } from "@mev/config";
 import { isTxHash, normalizeAddress, toTraceGraph } from "@mev/trace-graph";
 import express from "express";
 import { getContractSources } from "./etherscan.js";
-import { getDebugTrace } from "./provider.js";
+import { getTraceCached } from "./provider.js";
+import { getWorkspaceStatus } from "./workspace.js";
 
 const config = loadConfig();
 const app = express();
-
-// Traces are immutable once mined - cache the parsed call tree in memory.
-const traceCache = new Map<string, Awaited<ReturnType<typeof getDebugTrace>>>();
-const TRACE_CACHE_MAX = 200;
-
-async function getTraceCached(txHash: string) {
-  const cached = traceCache.get(txHash);
-  if (cached) return cached;
-  const trace = await getDebugTrace(txHash);
-  if (traceCache.size >= TRACE_CACHE_MAX) {
-    const oldest = traceCache.keys().next().value;
-    if (oldest) traceCache.delete(oldest);
-  }
-  traceCache.set(txHash, trace);
-  return trace;
-}
 
 app.get("/health", (_req, res) => {
   res.send("OK");
@@ -49,6 +34,21 @@ app.get("/api/traces/:txHash/graph", async (req, res) => {
   try {
     const trace = await getTraceCached(txHash);
     res.json(toTraceGraph(txHash, "eth", trace));
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
+  }
+});
+
+// Resolve the tx's incident and report/kick off its synthetic discovery
+// project (ADR-008). GET with a lazy side effect, like block inspection.
+app.get("/api/traces/:txHash/workspace", async (req, res) => {
+  const txHash = req.params.txHash.toLowerCase();
+  if (!isTxHash(txHash)) {
+    res.status(400).json({ error: "invalid transaction hash" });
+    return;
+  }
+  try {
+    res.json(await getWorkspaceStatus(txHash));
   } catch (err) {
     res.status(502).json({ error: (err as Error).message });
   }

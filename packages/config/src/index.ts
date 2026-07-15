@@ -15,10 +15,19 @@ const configSchema = z.object({
   EXPLORER_API_PORT: z.coerce.number().int().default(3000),
   TRACE_API_PORT: z.coerce.number().int().default(2022),
   AGENT_API_PORT: z.coerce.number().int().default(3100),
+  DISCO_API_PORT: z.coerce.number().int().default(2021),
+
+  // Where synthetic trace-<hash8> discovery projects are written (ADR-008).
+  // In compose this is a bind mount of the submodule's projects dir, so
+  // configs land on the host as untracked files, same as UI-created projects.
+  DISCOVERY_PROJECTS_DIR: z.string().default("l2beat/packages/config/src/projects"),
 
   MEV_INSPECT_IMAGE: z.string().default("mev-inspect-py:local"),
   // A hanging RPC node leaves inspect containers running forever otherwise
-  INSPECT_TIMEOUT_MS: z.coerce.number().int().default(5 * 60 * 1000),
+  INSPECT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .default(5 * 60 * 1000),
 
   ANTHROPIC_API_KEY: z.string().optional(),
   ETHERSCAN_API_KEY: z.string().optional(),
