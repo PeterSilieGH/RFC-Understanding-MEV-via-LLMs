@@ -389,6 +389,16 @@ a.trace-link {
   margin-left: 2px;
 }
 a.trace-link:hover { color: var(--blue); border-color: var(--blue); }
+/* non-carrier legs of a multi-tx incident: marker instead of a second link */
+.trace-link-ref {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  opacity: 0.7;
+  margin-left: 2px;
+  cursor: help;
+}
 
 .expand-arrow { display: inline-block; color: var(--muted); margin-right: 6px; }
 tr.expanded .expand-arrow { transform: rotate(90deg); display: inline-block; }

@@ -183,6 +183,24 @@ nodes in trace order. Entries show resolved contract name + decoded
 selector; selecting an entry drives the shared selection and focuses the
 graph. Loads *all* legs' traces (incident-scoped, from T2's resolution).
 
+#### T4 findings (2026-07-15, implemented and verified)
+
+- `TraceListPanel` (route-aware `ListTracePanel` wrapper, stock `ListPanel`
+  outside trace context). Legs sorted front-run → victims → back-run;
+  repeated roles numbered (`Victim 2`); the deep-linked leg's folder opens,
+  others start closed; entries depth-indented in trace order.
+- Cross-panel focus is a tiny zustand channel
+  (`panel-trace/workspace-store.ts`): List emits
+  `focusRequest {txHash, nodeId, seq}`; the graph switches legs when the
+  hash differs, then `selectAndFocus`es the node once its trace is loaded.
+  `seq` makes re-clicks re-focus. Address selection goes through the shared
+  `panel-store` with the **API-emitted checksummed address** (the T1
+  lesson: `ChainSpecificAddress` validates EIP-55, never construct).
+- Trap hit in review-by-crash: `toShortenedAddress` expects `eth:0x…`
+  chain-specific input; feeding it a raw trace address leaves
+  `split(':')[1]` undefined and takes down the route (error boundary).
+  Raw `0x…` addresses get a local shortener.
+
 ### T5 — Nodes auto-naming (S/M)
 
 Node titles from the synthetic project's contract names (template/meta →
@@ -190,12 +208,37 @@ verified source name → shortened address); field labels decode selectors
 against discovered ABIs instead of raw 4-bytes. MEV overlay (ADR-007)
 unchanged.
 
+#### T5 findings (2026-07-15, implemented and verified)
+
+- Enrichment is served by trace-api inside the workspace status
+  (`contracts`: lowercase 0x → {discovered name, checksummed `eth:` addr};
+  `selectors`: 4-byte → function name via
+  `ethers.FunctionFragment.from(signature).selector` over the discovered
+  ABIs). Parsed once per project from `discovered.json`, cached, cache
+  dropped on re-discovery.
+- The graph re-runs its deterministic layout when enrichment arrives
+  (`namesKey` in the load-effect deps) — same positions, nodes swap
+  addresses for names and raw selectors for function names. Selecting a
+  graph node also drives the shared panel-store (values/code/preview
+  follow), the reverse direction of T4's List clicks.
+
 ### T6 — Values / Code / Preview wiring (S)
 
 With T2+T3 in place these are the stock panels pointed at the synthetic
 project — the work is verification (fields render, sources load, Preview
 dossier highlights the selected contract) and empty-state polish while
 discovery is still running.
+
+#### T6 findings (2026-07-15, verified)
+
+- No code beyond T3's context-store plumbing was needed: Values/Code/Preview
+  are byte-identical stock panels; selection lands via T4 (List click) and
+  T5 (graph click). Verified in-browser: clicking `Victim ·
+  UniversalRouter.execute` switched the graph leg, focused the call node,
+  and flipped Values to UniversalRouter's discovered fields.
+- Preview remains subject to the T1 caveat: untemplatized synthetic
+  projects publish an empty permissions structure; the contract list side
+  renders.
 
 ### T7 — Top and bottom bars (M)
 
@@ -205,10 +248,25 @@ run. BottomBar keeps the status ribbon (trace fetch / discovery / RPC
 state), hotkeys, F1 help. Implement as thin wrappers so the shared
 components stay unmodified.
 
+#### T7 findings (2026-07-15, implemented and verified)
+
+- TopBar: `useIncidentIdentity()` renders e.g. `sandwich · 0x9f89d2ba…08ce`
+  in place of the synthetic project name on trace routes; Discover/Kill and
+  the layout controls work unchanged against the trace docking store
+  (T3's context provider). BottomBar inherited as-is — the discovery
+  status ribbon already lives on the resolve screen (T3).
+- Cosmetic note from T3 stands: both bars stay shared components; the only
+  trace-specific rendering is the identity line.
+
 ### T8 — Analyze stub (XS)
 
 Tab registered but disabled, pointing at ADR-006/008. Its enablement is
 M5's first UI task.
+
+#### T8 findings (2026-07-15, implemented)
+
+- `AnalyzeTracePanel`: stock `AnalyzePanel` in projects; on trace routes a
+  disabled stub pointing at ADR-006/008 (M5 wires the pi harness in).
 
 ### T9 — e2e + docs (S)
 
@@ -216,6 +274,27 @@ e2e: deep-linking a known sandwich shows Initial + leg folders; selecting a
 List entry updates Values/Code; `trace-*` projects hidden from the home
 list; repeat open does not re-run discovery. Amend ADR-008 status to
 "implemented"; update `CLAUDE.md`'s trace-panel paragraph.
+
+#### T9 findings (2026-07-15, done — work package complete)
+
+- e2e (`e2e/disco.spec.ts`, 11/11): deep link docks list|nodes|values around
+  the synthetic project, Initial + leg folders render, a List click clears
+  the Values empty state, repeat open redirects from disk in seconds,
+  `trace-*` projects hidden from the home list, panel switcher offers no
+  separate `trace` tab. Explorer verified in-browser: one `trace (N tx)`
+  link per incident, other legs show `↳ incident`.
+- ADR-008 amended to Implemented with two user-directed deltas (nodes panel
+  absorbs the trace graph; single incident link in the explorer);
+  CLAUDE.md's trace paragraph rewritten.
+- Fixed during closure: **concurrent discovery runs die on the shared
+  discovery-cache SQLite** (`SQLITE_BUSY`) — surfaced when two incidents
+  were opened while another discovery was still running. trace-api now
+  serializes all discovery runs process-wide (per-project dedupe was not
+  enough). Orphaned-run weakness from T2 still stands for terminal-panel
+  runs.
+- Left open (cosmetic/known): untemplatized Preview permissions (T1),
+  kill-by-project helper for orphaned runs (T2), LRU sweep for `trace-*`
+  accumulation (ADR-008 consequence).
 
 ## Acceptance (mirrors M4.5 in ARCHITECTURE.md)
 

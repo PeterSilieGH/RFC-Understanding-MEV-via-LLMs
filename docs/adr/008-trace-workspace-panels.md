@@ -2,8 +2,20 @@
 
 ## Status
 
-Accepted — 2026-07-14. Implementation pending (next trace milestone); the
-Analyze tab is explicitly deferred to the agent milestone (M5, ADR-006).
+Implemented — 2026-07-15 (accepted 2026-07-14). The Analyze tab ships as a
+disabled stub; its enablement is deferred to the agent milestone (M5,
+ADR-006). Two deltas against the accepted text, both user-directed during
+implementation:
+
+1. **No separate `trace` panel id.** The nodes panel *is* the execution-trace
+   graph in trace context: `nodes` renders the trace graph when the route
+   carries a `:txHash` param and the stock dependency graph inside discovery
+   projects (`NodesTracePanel`). The panel switcher offers no `trace` entry.
+2. **One trace link per incident in the explorer.** Legs of the same incident
+   (e.g. all three transactions of a sandwich) share a single "trace" link in
+   the block view — carried by the first rendered leg, labelled `trace (N
+   tx)`; the other legs show a passive `↳ incident` marker. The link opens
+   the workspace that already contains every leg.
 
 ## Context
 

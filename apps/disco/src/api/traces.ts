@@ -74,7 +74,8 @@ export async function getTxMev(txHash: string): Promise<TxMev> {
 
 export interface TraceWorkspaceLeg {
   txHash: string
-  relation: 'self' | 'counterpart' | 'victim' | 'frontrun' | 'backrun' | 'winner' | 'loser'
+  /** Absolute role within the incident (List folder names, ADR-008). */
+  role: 'frontrun' | 'backrun' | 'victim' | 'winner' | 'loser' | 'counterpart' | 'root'
   viaType: string | null
 }
 
@@ -84,6 +85,18 @@ export interface TraceWorkspace {
   legs: TraceWorkspaceLeg[]
   addressCount: number | null
   error: string | null
+  /** Present when ready: lowercase 0x address -> discovered name + eth: address. */
+  contracts?: Record<string, { name: string | null; address: string }>
+  /** Present when ready: 4-byte selector -> function name from discovered ABIs. */
+  selectors?: Record<string, string>
+}
+
+export function traceWorkspaceQueryOptions(txHash: string | undefined) {
+  return {
+    queryKey: ['trace-workspace', txHash],
+    queryFn: () => getTraceWorkspace(txHash ?? ''),
+    enabled: !!txHash,
+  }
 }
 
 /**

@@ -20,18 +20,17 @@ import { IconNodes } from '../../../icons/IconNodes'
 import { IconSigma } from '../../../icons/IconSigma'
 import { IconStamp } from '../../../icons/IconStamp'
 import { IconTerminal } from '../../../icons/IconTerminal'
-import { IconTrace } from '../../../icons/IconTrace'
 import { IconWebApp } from '../../../icons/IconWebApp'
-import { AnalyzePanel } from '../panel-analyze/AnalyzePanel'
 import { CodePanel } from '../panel-code/CodePanel'
 import { ConfigPanel } from '../panel-config/ConfigPanel'
 import { DiffHistoryPanel } from '../panel-diff-history/DiffHistoryPanel'
 import { ListPanel } from '../panel-list/ListPanel'
-import { NodesPanel } from '../panel-nodes/NodesPanel'
 import { PreviewPanel } from '../panel-preview/PreviewPanel'
 import { TemplatePanel } from '../panel-template/TemplatePanel'
 import { TerminalPanel } from '../panel-terminal/TerminalPanel'
-import { TraceRoutePanel } from '../panel-trace/TraceRoutePanel'
+import { AnalyzeTracePanel } from '../panel-trace/AnalyzeTracePanel'
+import { NodesTracePanel } from '../panel-trace/NodesTracePanel'
+import { ListTracePanel } from '../panel-trace/TraceListPanel'
 import { ValuesPanel } from '../panel-values/ValuesPanel'
 import { TabExtras } from './TabExtras'
 
@@ -39,8 +38,6 @@ export const PANEL_IDS = [
   'list',
   'values',
   'nodes',
-  // DIVERGENCE(mev): execution-trace graph panel
-  'trace',
   'code',
   'preview',
   'analyze',
@@ -58,14 +55,16 @@ interface Panel {
 }
 
 const PANELS: Record<PanelId, Panel> = {
-  list: { icon: IconList, body: ListPanel },
+  // DIVERGENCE(mev): in the trace workspace the List shows incident folders
+  list: { icon: IconList, body: ListTracePanel },
   values: { icon: IconSigma, body: ValuesPanel },
-  nodes: { icon: IconNodes, body: NodesPanel },
-  // picks up a deep-linked /ui/trace/:txHash hash from the route when present
-  trace: { icon: IconTrace, body: TraceRoutePanel },
+  // DIVERGENCE(mev): in the trace workspace (ADR-008) the nodes panel IS the
+  // execution-trace graph; in a project it stays the dependency graph
+  nodes: { icon: IconNodes, body: NodesTracePanel },
   code: { icon: IconCode, body: CodePanel },
   preview: { icon: IconWebApp, body: PreviewPanel },
-  analyze: { icon: IconChatbot, body: AnalyzePanel },
+  // DIVERGENCE(mev): in the trace workspace the tab is a disabled stub (M5)
+  analyze: { icon: IconChatbot, body: AnalyzeTracePanel },
   terminal: { icon: IconTerminal, body: TerminalPanel },
   template: { icon: IconStamp, body: TemplatePanel },
   config: { icon: IconGear, body: ConfigPanel },
@@ -177,7 +176,7 @@ export const traceDockingConfig: DockingConfig = {
   storageKey: 'docking/v2:trace',
   defaultLayout: newSplit(
     'row',
-    [newLeaf('list'), newLeaf('trace'), newLeaf('values')],
+    [newLeaf('list'), newLeaf('nodes'), newLeaf('values')],
     [0.5, 1, 1],
   ),
 }

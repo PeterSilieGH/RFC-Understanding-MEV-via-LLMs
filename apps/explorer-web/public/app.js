@@ -652,10 +652,42 @@ function txLink(hash) {
 // Deep link into the DiscoUI trace view (apps/disco), which renders the
 // transaction's execution trace annotated with the MEV facts shown here.
 // The port comes from /env.js (nginx-injected) with the compose default.
-function traceLink(hash) {
+function traceLink(hash, legCount) {
   const port = (window.__ENV && window.__ENV.discoWebPort) || 8082;
   const url = `http://${window.location.hostname}:${port}/ui/trace/${hash}`;
-  return `<a class="trace-link" href="${url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="Open the execution trace in DiscoUI">trace</a>`;
+  const label = legCount > 1 ? `trace (${legCount} tx)` : "trace";
+  const title =
+    legCount > 1
+      ? `Open all ${legCount} transactions of this incident as one DiscoUI workspace`
+      : "Open the execution trace in DiscoUI";
+  return `<a class="trace-link" href="${url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${title}">${label}</a>`;
+}
+
+// Mirror of trace-api's incident resolution (workspace.ts): the legs of a
+// multi-transaction MEV incident (sandwich front-run/victims/back-run,
+// two-legged arbitrage, …) all resolve to the same canonical id (the
+// lexicographically smallest leg hash), so DiscoUI analyzes them in one
+// virtual project - and the table shows one trace link per incident.
+const INCIDENT_LEG_FIELDS = [
+  "counterpartTxHash",
+  "frontrunTxHash",
+  "backrunTxHash",
+  "winnerTxHash",
+  "reverseTxHash",
+];
+const INCIDENT_LEG_LIST_FIELDS = ["victimTxHashes", "loserTxHashes"];
+
+function incidentLegs(tx) {
+  const legs = new Set([tx.hash.toLowerCase()]);
+  for (const m of tx.mev) {
+    for (const field of INCIDENT_LEG_FIELDS) {
+      if (typeof m[field] === "string") legs.add(m[field].toLowerCase());
+    }
+    for (const field of INCIDENT_LEG_LIST_FIELDS) {
+      for (const h of m[field] || []) legs.add(h.toLowerCase());
+    }
+  }
+  return [...legs].sort();
 }
 
 function profitSpan(amount) {
@@ -700,6 +732,15 @@ function renderTable() {
     return;
   }
 
+  // one trace link per incident: the first rendered leg carries it
+  const incidentLinkCarrier = new Map();
+  for (const tx of visible) {
+    const legs = incidentLegs(tx);
+    if (legs.length > 1 && !incidentLinkCarrier.has(legs[0])) {
+      incidentLinkCarrier.set(legs[0], tx.hash);
+    }
+  }
+
   const rows = visible
     .map((tx) => {
       const badges = tx.mev.length
@@ -714,6 +755,14 @@ function renderTable() {
             })
             .join("")
         : `<span class="badge none">no attacks detected</span>`;
+
+      const legs = incidentLegs(tx);
+      const traceLinkHtml =
+        legs.length === 1
+          ? traceLink(tx.hash)
+          : incidentLinkCarrier.get(legs[0]) === tx.hash
+            ? traceLink(legs[0], legs.length)
+            : `<span class="trace-link-ref" title="Part of a multi-transaction incident - the trace link on its first transaction opens all ${legs.length} legs together">↳ incident</span>`;
 
       const isExpanded = state.expanded.has(tx.hash);
       const hasDetail = tx.mev.length > 0 || tx.swaps.length > 0;
@@ -734,7 +783,7 @@ function renderTable() {
 
       return `
         <tr class="${tx.mev.length ? "has-mev" : ""} ${isExpanded ? "expanded" : ""}" data-tx="${tx.hash}" data-has-detail="${hasDetail}">
-          <td class="mono">${hasDetail ? '<span class="expand-arrow">▶</span>' : ""}<a class="addr" href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${shortHash(tx.hash)}</a> ${traceLink(tx.hash)}</td>
+          <td class="mono">${hasDetail ? '<span class="expand-arrow">▶</span>' : ""}<a class="addr" href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${shortHash(tx.hash)}</a> ${traceLinkHtml}</td>
           <td class="mono">${addrLink(tx.from)}</td>
           <td class="mono">${addrLink(tx.to)}</td>
           <td class="mono">${tx.gasUsed ?? "–"}</td>

@@ -13,15 +13,25 @@ import {
 } from '@mev/trace-graph'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { getTraceGraph, getTxMev, type TxMev, type TxSwap } from '../../../api/traces'
+import { useParams } from 'react-router-dom'
+import {
+  getTraceGraph,
+  getTxMev,
+  type TraceWorkspace,
+  type TxMev,
+  type TxSwap,
+  traceWorkspaceQueryOptions,
+} from '../../../api/traces'
 import { LoadingState } from '../../../components/LoadingState'
 import { Controls } from '../panel-nodes/controls/Controls'
 import type { Field, Node } from '../panel-nodes/store/State'
 import { NodesStoreProvider, traceNodesStore } from '../panel-nodes/store/store'
 import { NODE_WIDTH } from '../panel-nodes/store/utils/constants'
 import { Viewport } from '../panel-nodes/view/Viewport'
+import { usePanelStore } from '../store/panel-store'
 import { TraceMevStrip } from './TraceMevStrip'
 import { TraceNodeDetails } from './TraceNodeDetails'
+import { useTraceWorkspaceStore } from './workspace-store'
 
 const TREE_GAP_X = 120
 const TREE_GAP_Y = 24
@@ -58,8 +68,17 @@ export function TracePanel(props: { initialTxHash?: string }) {
     retry: 1,
   })
 
+  // Workspace enrichment (ADR-008): discovered contract names + decoded
+  // selectors of the incident's synthetic project. Only fetched when the
+  // panel sits on a deep-linked route - the query is what triggers the
+  // bounded discovery run, so manual traces must not fire it.
+  const { txHash: routeTxHash } = useParams()
+  const workspace = useQuery(traceWorkspaceQueryOptions(routeTxHash))
+
   const swapsByNodeId = swapsForTx(mevResponse.data, txHash)
-  useLoadTraceNodes(response.data, swapsByNodeId)
+  useLoadTraceNodes(response.data, swapsByNodeId, workspace.data)
+  useFocusRequests(txHash, response.data, setInput, setTxHash)
+  useSyncGraphSelectionToPanelStore(workspace.data)
 
   function openTx(value: string) {
     const hash = value.trim().toLowerCase()
@@ -144,18 +163,24 @@ function swapsForTx(mev: TxMev | undefined, txHash: string): Map<string, TxSwap>
 function useLoadTraceNodes(
   data: TraceGraph | undefined,
   swapsByNodeId: Map<string, TxSwap>,
+  workspace: TraceWorkspace | undefined,
 ) {
   // reloading on enrichment arrival re-runs the deterministic layout, so the
-  // graph looks identical - swap nodes just gain their color and label
+  // graph looks identical - swap nodes just gain their color and label,
+  // and workspace arrival swaps addresses for discovered names (T5)
   const swapsKey = [...swapsByNodeId.keys()].join(',')
-  // biome-ignore lint/correctness/useExhaustiveDependencies: swapsKey stands in for the map
+  const namesKey = workspace?.status === 'ready' ? workspace.project : ''
+  // biome-ignore lint/correctness/useExhaustiveDependencies: swapsKey/namesKey stand in for the maps
   useEffect(() => {
     const store = traceNodesStore.getState()
     store.clear()
     if (!data) {
       return
     }
-    store.loadNodes(`trace:${data.transactionHash}`, toTraceNodes(data, swapsByNodeId))
+    store.loadNodes(
+      `trace:${data.transactionHash}`,
+      toTraceNodes(data, swapsByNodeId, workspace),
+    )
 
     // loadNodes computed each node's height from its field count - now place
     // the call tree deterministically (depth on x, siblings stacked on y)
@@ -171,7 +196,50 @@ function useLoadTraceNodes(
       },
     )
     loaded.layout(positions)
-  }, [data, swapsKey])
+  }, [data, swapsKey, namesKey])
+}
+
+/**
+ * The List panel (ADR-008) asks the graph to show a call node of a specific
+ * leg: switch the traced transaction when needed, then select + center the
+ * node once its graph is loaded (useLoadTraceNodes runs first, hook order).
+ */
+function useFocusRequests(
+  txHash: string,
+  data: TraceGraph | undefined,
+  setInput: (value: string) => void,
+  setTxHash: (value: string) => void,
+) {
+  const focusRequest = useTraceWorkspaceStore((state) => state.focusRequest)
+  useEffect(() => {
+    if (!focusRequest) return
+    if (focusRequest.txHash !== txHash) {
+      setInput(focusRequest.txHash)
+      setTxHash(focusRequest.txHash)
+      return
+    }
+    if (data?.transactionHash === focusRequest.txHash) {
+      traceNodesStore.getState().selectAndFocus(focusRequest.nodeId)
+    }
+  }, [focusRequest, txHash, data, setInput, setTxHash])
+}
+
+/**
+ * Selecting a call node in the graph resolves to its contract address in the
+ * shared panel-store, so values/code/preview follow (ADR-008). Two calls
+ * into the same contract select the same address - that is the intended
+ * semantic; the per-call view lives in the trace sidebar.
+ */
+function useSyncGraphSelectionToPanelStore(workspace: TraceWorkspace | undefined) {
+  const graphSelected = traceNodesStore((state) => state.selected)
+  const select = usePanelStore((state) => state.select)
+  useEffect(() => {
+    const first = graphSelected[0]
+    if (!first || !workspace?.contracts) return
+    const node = traceNodesStore.getState().nodes.find((n) => n.id === first)
+    const contract = node && workspace.contracts[node.address.toLowerCase()]
+    if (contract) select(contract.address)
+  }, [graphSelected, workspace, select])
 }
 
 function colorForCall(call: TraceCallNode, isSwap: boolean): number {
@@ -195,7 +263,20 @@ function shortAddress(address: string | null): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
-function toTraceNodes(graph: TraceGraph, swapsByNodeId: Map<string, TxSwap>): Node[] {
+function toTraceNodes(
+  graph: TraceGraph,
+  swapsByNodeId: Map<string, TxSwap>,
+  workspace?: TraceWorkspace,
+): Node[] {
+  // T5 (ADR-008): discovered names for node titles, decoded selectors for
+  // field labels; graceful fallback to addresses/raw 4-bytes until the
+  // synthetic project is ready
+  const displayAddress = (address: string | null): string => {
+    const name = address ? workspace?.contracts?.[address.toLowerCase()]?.name : undefined
+    return name || shortAddress(address)
+  }
+  const displaySelector = (selector: string | null): string =>
+    selector ? ` ${workspace?.selectors?.[selector] ?? selector}` : ''
   const childrenOf = new Map<string, TraceCallNode[]>()
   for (const node of graph.nodes) {
     if (node.parentId === null) continue
@@ -215,7 +296,7 @@ function toTraceNodes(graph: TraceGraph, swapsByNodeId: Map<string, TxSwap>): No
   return graph.nodes.map((call) => {
     const children = childrenOf.get(call.id) ?? []
     const fields: Field[] = children.map((child) => ({
-      name: `${child.type.toLowerCase()}${child.selector ? ` ${child.selector}` : ''}${child.error ? ' ✗' : ''}`,
+      name: `${child.type.toLowerCase()}${displaySelector(child.selector)}${child.error ? ' ✗' : ''}`,
       target: child.id,
       box: { x: 0, y: 0, width: 0, height: 0 },
       connection: {
@@ -239,7 +320,7 @@ function toTraceNodes(graph: TraceGraph, swapsByNodeId: Map<string, TxSwap>): No
       isReachable: true,
       hasTemplate: false,
       addressType: call.error ? 'Unverified' : 'Contract',
-      name: `${call.type} ${shortAddress(call.to)}${suffixes.length > 0 ? ` ${suffixes.join(' ')}` : ''}`,
+      name: `${call.type} ${displayAddress(call.to)}${suffixes.length > 0 ? ` ${suffixes.join(' ')}` : ''}`,
       fields,
       hiddenFields: [],
       box: { x: 0, y: 0, width: NODE_WIDTH, height: 0 },

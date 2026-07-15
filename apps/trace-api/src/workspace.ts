@@ -11,31 +11,44 @@
 // not the deep-linked one, so front-run, victim and back-run links all map
 // to the same project.
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "@mev/config";
 import type { DebugTransactionCall } from "@mev/trace-graph";
+import { ethers } from "ethers";
 import { getTraceCached } from "./provider.js";
 
 const config = loadConfig();
 
-export type LegRelation =
-  | "self"
-  | "counterpart"
-  | "victim"
+/**
+ * Absolute role of a leg within its incident (folder names in the List
+ * panel, ADR-008) - never relative to which leg resolved the workspace.
+ */
+export type LegRole =
   | "frontrun"
   | "backrun"
+  | "victim"
   | "winner"
-  | "loser";
+  | "loser"
+  | "counterpart"
+  | "root";
 
 export interface IncidentLeg {
   txHash: string;
-  relation: LegRelation;
+  role: LegRole;
   /** mev[] entry type this leg was resolved from (e.g. "sandwich_frontrun"). */
   viaType: string | null;
 }
 
-export interface WorkspaceStatus {
+/** Panel enrichment read from the synthetic project's discovered.json. */
+export interface WorkspaceEnrichment {
+  /** lowercase 0x address -> discovered name + checksummed eth: address. */
+  contracts: Record<string, { name: string | null; address: string }>;
+  /** 4-byte selector (0x…) -> function name, from the discovered ABIs. */
+  selectors: Record<string, string>;
+}
+
+export interface WorkspaceStatus extends Partial<WorkspaceEnrichment> {
   project: string;
   status: "discovering" | "ready" | "error";
   legs: IncidentLeg[];
@@ -60,17 +73,28 @@ const MAX_INITIAL_ADDRESSES = 64;
 const DISCOVERY_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** mev[] fields that reference other legs of the same incident. */
-const LEG_FIELDS: [string, LegRelation][] = [
+const LEG_FIELDS: [string, LegRole][] = [
   ["counterpartTxHash", "counterpart"],
   ["frontrunTxHash", "frontrun"],
   ["backrunTxHash", "backrun"],
   ["winnerTxHash", "winner"],
   ["reverseTxHash", "counterpart"],
 ];
-const LEG_LIST_FIELDS: [string, LegRelation][] = [
+const LEG_LIST_FIELDS: [string, LegRole][] = [
   ["victimTxHashes", "victim"],
   ["loserTxHashes", "loser"],
 ];
+
+/** What an entry type says about the tx that carries it / its counterpart. */
+const SELF_ROLE_BY_TYPE: Record<string, LegRole> = {
+  sandwich_frontrun: "frontrun",
+  sandwich_backrun: "backrun",
+  sandwiched_victim: "victim",
+};
+const COUNTERPART_ROLE_BY_TYPE: Record<string, LegRole> = {
+  sandwich_frontrun: "backrun",
+  sandwich_backrun: "frontrun",
+};
 
 const TX_HASH_RE = /^0x[0-9a-f]{64}$/;
 
@@ -84,21 +108,29 @@ async function resolveIncidentLegs(txHash: string): Promise<IncidentLeg[]> {
   };
 
   const legs = new Map<string, IncidentLeg>();
-  legs.set(txHash, { txHash, relation: "self", viaType: null });
-  const add = (hash: unknown, relation: LegRelation, viaType: string) => {
+  const add = (hash: unknown, role: LegRole, viaType: string | null) => {
     if (typeof hash !== "string") return;
     const normalized = hash.toLowerCase();
-    if (!TX_HASH_RE.test(normalized) || legs.has(normalized)) return;
-    legs.set(normalized, { txHash: normalized, relation, viaType });
+    if (!TX_HASH_RE.test(normalized)) return;
+    const existing = legs.get(normalized);
+    // a specific role beats the generic ones a leg may pick up first
+    if (existing && !(existing.role === "root" && role !== "root")) return;
+    legs.set(normalized, { txHash: normalized, role, viaType });
   };
+
+  add(txHash, "root", null);
   for (const entry of body.transaction?.mev ?? []) {
     const viaType = typeof entry.type === "string" ? entry.type : "unknown";
-    for (const [field, relation] of LEG_FIELDS) {
-      add(entry[field], relation, viaType);
+    const selfRole = SELF_ROLE_BY_TYPE[viaType];
+    if (selfRole) add(txHash, selfRole, viaType);
+    for (const [field, role] of LEG_FIELDS) {
+      const effective =
+        field === "counterpartTxHash" ? (COUNTERPART_ROLE_BY_TYPE[viaType] ?? role) : role;
+      add(entry[field], effective, viaType);
     }
-    for (const [field, relation] of LEG_LIST_FIELDS) {
+    for (const [field, role] of LEG_LIST_FIELDS) {
       const list = entry[field];
-      if (Array.isArray(list)) for (const h of list) add(h, relation, viaType);
+      if (Array.isArray(list)) for (const h of list) add(h, role, viaType);
     }
   }
   return [...legs.values()];
@@ -154,7 +186,18 @@ ${addresses.map((a) => `    "eth:${a}"`).join(",\n")}
  * waits for the SSE stream to end. Closing the stream kills the run
  * server-side, which is also how a timeout aborts a stuck run.
  */
-async function runDiscovery(project: string): Promise<void> {
+// Discovery runs are serialized process-wide (not just deduped per project):
+// concurrent `l2b discover` runs share the discovery-cache SQLite and die
+// with SQLITE_BUSY when they overlap.
+let discoveryQueue: Promise<void> = Promise.resolve();
+
+function runDiscovery(project: string): Promise<void> {
+  const run = discoveryQueue.then(() => runDiscoveryNow(project));
+  discoveryQueue = run.catch(() => {});
+  return run;
+}
+
+async function runDiscoveryNow(project: string): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS);
   try {
@@ -200,10 +243,54 @@ async function prepareWorkspace(project: string, legs: IncidentLeg[]): Promise<v
     if (!existsSync(join(projectDir(project), "discovered.json"))) {
       throw new Error("discovery finished but wrote no discovered.json");
     }
+    enrichmentCache.delete(project); // a re-run rewrote discovered.json
     state.status = "ready";
   } catch (err) {
     state.status = "error";
     state.error = (err as Error).message;
+  }
+}
+
+// Names + selector decodings for the panels (ADR-008 T5), parsed once per
+// project from the synthetic project's discovered.json: entry names keyed by
+// lowercase address, and function selectors (keccak of the human-readable
+// ABI signatures discovery collected) keyed by 4-byte hex.
+const enrichmentCache = new Map<string, WorkspaceEnrichment>();
+
+async function readEnrichment(project: string): Promise<WorkspaceEnrichment | undefined> {
+  const cached = enrichmentCache.get(project);
+  if (cached) return cached;
+  try {
+    const raw = await readFile(join(projectDir(project), "discovered.json"), "utf8");
+    const discovered = JSON.parse(raw) as {
+      entries?: { address: string; name?: string }[];
+      abis?: Record<string, string[]>;
+    };
+    const contracts: WorkspaceEnrichment["contracts"] = {};
+    for (const entry of discovered.entries ?? []) {
+      const plain = entry.address.replace(/^[a-z]+:/, "");
+      contracts[plain.toLowerCase()] = {
+        name: entry.name || null,
+        address: entry.address,
+      };
+    }
+    const selectors: WorkspaceEnrichment["selectors"] = {};
+    for (const signatures of Object.values(discovered.abis ?? {})) {
+      for (const signature of signatures) {
+        if (!signature.startsWith("function ")) continue;
+        try {
+          const fragment = ethers.FunctionFragment.from(signature);
+          selectors[fragment.selector] ??= fragment.name;
+        } catch {
+          // unparseable signature - skip, decoding is best-effort
+        }
+      }
+    }
+    const enrichment = { contracts, selectors };
+    enrichmentCache.set(project, enrichment);
+    return enrichment;
+  } catch {
+    return undefined;
   }
 }
 
@@ -231,11 +318,13 @@ export async function getWorkspaceStatus(txHash: string): Promise<WorkspaceStatu
     runs.delete(project);
   }
 
+  const enrichment = state.status === "ready" ? await readEnrichment(project) : undefined;
   return {
     project,
     status: state.status,
     legs: state.legs,
     addressCount: state.addressCount,
     error: state.error,
+    ...enrichment,
   };
 }

@@ -1,5 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
-import { Link } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
+import { traceWorkspaceQueryOptions } from '../../../api/traces'
 import { Button } from '../../../components/Button'
 import { IS_READONLY } from '../../../config/readonly'
 import { IconClose } from '../../../icons/IconClose'
@@ -13,8 +15,25 @@ import { SettingsDialog } from './SettingsDialog'
 // (ADR-008) reuses this bar against its own docking store
 import { addPanel, useActiveDockingStore } from './store'
 
+// DIVERGENCE(mev): in the trace workspace the bar shows the incident
+// identity (MEV type + deep-linked tx hash) instead of just the synthetic
+// project name (ADR-008)
+function useIncidentIdentity(): string | undefined {
+  const { txHash } = useParams()
+  const workspace = useQuery(traceWorkspaceQueryOptions(txHash))
+  if (!txHash) return undefined
+  const viaTypes = (workspace.data?.legs ?? [])
+    .map((leg) => leg.viaType)
+    .filter((t): t is string => t !== null)
+  const kind = viaTypes.find((t) => t.startsWith('sandwich'))
+    ? 'sandwich'
+    : (viaTypes[0]?.split('_')[0] ?? 'trace')
+  return `${kind} · ${txHash.slice(0, 10)}…${txHash.slice(-4)}`
+}
+
 export function TopBar(props: { project: string }) {
   const useDockingStore = useActiveDockingStore()
+  const incident = useIncidentIdentity()
   const layouts = useDockingStore((state) => state.layouts)
   const selectedLayout = useDockingStore((state) => state.selectedLayout)
   const loadLayout = useDockingStore((state) => state.loadLayout)
@@ -31,7 +50,7 @@ export function TopBar(props: { project: string }) {
         <Link to="/ui">
           <img className="-top-[3px] relative h-[20px]" src="/logo.svg" />
         </Link>
-        <p>{props.project}</p>
+        <p>{incident ?? props.project}</p>
         <div className="border-coffee-400/30 border-l pl-3">
           <Search />
         </div>
