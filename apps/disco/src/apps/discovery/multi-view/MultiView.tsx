@@ -2,7 +2,9 @@ import { useEffect } from 'react'
 import { Docking, findLeafByKey } from '../../../components/docking'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { BottomBar } from './BottomBar/BottomBar'
-import { useDockingStore } from './store'
+// DIVERGENCE(mev): store resolved via context so the trace workspace
+// (ADR-008) reuses this component against its own docking store
+import { useActiveDockingStore } from './store'
 import { TopBar } from './TopBar'
 
 export interface MultiViewProps {
@@ -11,6 +13,7 @@ export interface MultiViewProps {
 
 export function MultiView(props: MultiViewProps) {
   const isMobileOrTablet = useIsMobile()
+  const useDockingStore = useActiveDockingStore()
   const fullScreenLeaf = useDockingStore((state) => state.fullScreenLeaf)
   const activeLeaf = useDockingStore((state) => state.activeLeaf)
   const hasNodes = useDockingStore(

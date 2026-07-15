@@ -45,7 +45,10 @@ export const DiscoveryAppModule: AppModule = {
           path: 'new',
           element: <NewProjectPage />,
         },
-        // DIVERGENCE(mev): trace deep links from the MEV explorer (M4)
+        // DIVERGENCE(mev): trace deep links from the MEV explorer (M4);
+        // with a resolved synthetic project the same page docks the full
+        // workspace (ADR-008) - the nested :project param is what the stock
+        // project-scoped panels read via useParams()
         {
           path: 'trace',
           element: <TracePage />,
@@ -53,6 +56,15 @@ export const DiscoveryAppModule: AppModule = {
         {
           path: 'trace/:txHash',
           element: <TracePage />,
+        },
+        {
+          path: 'trace/:txHash/:project',
+          element: (
+            <ConfigModelsProvider>
+              <NotificationsRoot />
+              <TracePage />
+            </ConfigModelsProvider>
+          ),
         },
         {
           path: 'reports/config-health',

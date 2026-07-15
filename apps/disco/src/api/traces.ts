@@ -70,6 +70,36 @@ export async function getTxMev(txHash: string): Promise<TxMev> {
   return res.json()
 }
 
+// --- Trace workspace (trace-api, synthetic trace-<hash8> projects, ADR-008) -
+
+export interface TraceWorkspaceLeg {
+  txHash: string
+  relation: 'self' | 'counterpart' | 'victim' | 'frontrun' | 'backrun' | 'winner' | 'loser'
+  viaType: string | null
+}
+
+export interface TraceWorkspace {
+  project: string
+  status: 'discovering' | 'ready' | 'error'
+  legs: TraceWorkspaceLeg[]
+  addressCount: number | null
+  error: string | null
+}
+
+/**
+ * Resolve the incident and report (or kick off) its synthetic discovery
+ * project. First call starts a bounded discovery run; poll while
+ * status === 'discovering'.
+ */
+export async function getTraceWorkspace(txHash: string): Promise<TraceWorkspace> {
+  const res = await fetch(`/api/traces/${txHash}/workspace`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => undefined)
+    throw new Error(body?.error ?? res.statusText)
+  }
+  return res.json()
+}
+
 // --- Contract sources (trace-api /api/contracts, Etherscan-backed) ----------
 
 export interface ContractCode {

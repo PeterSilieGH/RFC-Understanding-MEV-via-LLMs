@@ -151,6 +151,29 @@ provider) so those panels run byte-identical. Selection stays the shared
 `panel-store` (address-keyed); List/Nodes translate call-node → contract
 address when selecting.
 
+#### T3 findings (2026-07-15, implemented and verified)
+
+The nested-route option won: `/ui/trace/:txHash` resolves the workspace
+(react-query poll; full-screen graph + status ribbon while discovering,
+retry on error) and redirects to **`/ui/trace/:txHash/:project`** — the
+`:project` param is what lets every stock project-scoped panel run
+byte-identical via `useParams()`. Second docking store
+(`docking/v2:trace`, default `list | trace | values`) resolved through a
+`DockingStoreProvider` context (default = discovery store), so MultiView /
+TopBar / BottomBar are reused with three marked one-line swaps rather than
+duplicated. The docked `trace` panel picks the deep-linked hash off the
+route (`TraceRoutePanel`).
+
+Deltas vs the plan: the panel *switcher* keeps the full catalog (all
+panels are project-scoped and work against synthetic projects — terminal
+shows the discovery output, config edits the generated config; restricting
+would add divergence for no gain); only the default layout is
+trace-specific. The stock TopBar's Discover/Kill already drive
+`l2b discover <project>` — correct for synthetic projects as-is, so the
+trace TopBar variant (T7) is cosmetic (incident identity), not functional.
+Verified in-browser: fresh incident → ribbon ("discovering 22 contracts")
+→ auto-redirect → workspace with List/graph/Values live; e2e 25/25.
+
 ### T4 — List panel, incident folders (M)
 
 Trace variant of the List: **Initial** folder = each leg's root call;

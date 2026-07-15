@@ -5,13 +5,16 @@ import { useIsomorphicKeys } from '../../hooks/useIsomorphicKeys'
 import { useDiscoveryCommand } from '../../panel-terminal/useDiscoveryCommand'
 import { useSearchStore } from '../../search/store'
 import { useGlobalSettingsStore } from '../../store/global-settings-store'
-import { addPanel, useDockingStore } from '../store'
+// DIVERGENCE(mev): store resolved via context so the trace workspace
+// (ADR-008) reuses this bar against its own docking store
+import { addPanel, useActiveDockingStore } from '../store'
 import { Keys } from './Keys'
 import { StatusRibbon } from './StatusRibbon'
 
 export function BottomBar() {
   const { project } = useParams()
   const [hintOpen, setHintOpen] = useState(false)
+  const useDockingStore = useActiveDockingStore()
   const loadLayout = useDockingStore((state) => state.loadLayout)
   const removeLeaf = useDockingStore((state) => state.removeLeaf)
   const toggleFullScreen = useDockingStore((state) => state.toggleFullScreen)
@@ -36,7 +39,7 @@ export function BottomBar() {
         }
       }
       if (e.code === 'Enter' && e.altKey) {
-        addPanel()
+        addPanel(useDockingStore)
       }
       if (e.code === 'KeyQ' && e.altKey) {
         removeLeaf()

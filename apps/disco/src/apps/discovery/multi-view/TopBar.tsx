@@ -9,9 +9,12 @@ import { useTerminalStore } from '../panel-terminal/store'
 import { useDiscoveryCommand } from '../panel-terminal/useDiscoveryCommand'
 import { Search } from '../search/Search'
 import { SettingsDialog } from './SettingsDialog'
-import { addPanel, useDockingStore } from './store'
+// DIVERGENCE(mev): store resolved via context so the trace workspace
+// (ADR-008) reuses this bar against its own docking store
+import { addPanel, useActiveDockingStore } from './store'
 
 export function TopBar(props: { project: string }) {
+  const useDockingStore = useActiveDockingStore()
   const layouts = useDockingStore((state) => state.layouts)
   const selectedLayout = useDockingStore((state) => state.selectedLayout)
   const loadLayout = useDockingStore((state) => state.loadLayout)
@@ -78,7 +81,7 @@ export function TopBar(props: { project: string }) {
           <Button
             size="small"
             className="rounded-sm"
-            onClick={() => addPanel()}
+            onClick={() => addPanel(useDockingStore)}
           >
             <IconPlus />
             <span className="max-lg:hidden">Panel</span>

@@ -31,7 +31,7 @@ import { NodesPanel } from '../panel-nodes/NodesPanel'
 import { PreviewPanel } from '../panel-preview/PreviewPanel'
 import { TemplatePanel } from '../panel-template/TemplatePanel'
 import { TerminalPanel } from '../panel-terminal/TerminalPanel'
-import { TracePanel } from '../panel-trace/TracePanel'
+import { TraceRoutePanel } from '../panel-trace/TraceRoutePanel'
 import { ValuesPanel } from '../panel-values/ValuesPanel'
 import { TabExtras } from './TabExtras'
 
@@ -61,8 +61,8 @@ const PANELS: Record<PanelId, Panel> = {
   list: { icon: IconList, body: ListPanel },
   values: { icon: IconSigma, body: ValuesPanel },
   nodes: { icon: IconNodes, body: NodesPanel },
-  // the panel form takes no deep-linked hash (that's the /ui/trace/:txHash route)
-  trace: { icon: IconTrace, body: () => <TracePanel /> },
+  // picks up a deep-linked /ui/trace/:txHash hash from the route when present
+  trace: { icon: IconTrace, body: TraceRoutePanel },
   code: { icon: IconCode, body: CodePanel },
   preview: { icon: IconWebApp, body: PreviewPanel },
   analyze: { icon: IconChatbot, body: AnalyzePanel },
@@ -167,4 +167,17 @@ export const dockingConfig: DockingConfig = {
   renderHeader: (api) => <PanelHeader api={api} />,
   renderBody,
   renderDragPreview: (key) => (isPanelId(key) ? <PanelLabel id={key} /> : key),
+}
+
+// DIVERGENCE(mev): the trace workspace (ADR-008) docks the same panel
+// catalog around an incident's synthetic trace-<hash8> project, with its
+// own persisted layouts and the trace graph in the center by default.
+export const traceDockingConfig: DockingConfig = {
+  ...dockingConfig,
+  storageKey: 'docking/v2:trace',
+  defaultLayout: newSplit(
+    'row',
+    [newLeaf('list'), newLeaf('trace'), newLeaf('values')],
+    [0.5, 1, 1],
+  ),
 }
