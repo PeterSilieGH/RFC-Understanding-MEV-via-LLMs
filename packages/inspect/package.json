@@ -1,0 +1,25 @@
+{
+  "name": "@mev/inspect",
+  "version": "1.0.0",
+  "description": "Native TypeScript MEV inspector: trace decode, classification, and pattern-matching (ADR-010, ports mev-inspect-py).",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mev/config": "workspace:*",
+    "@mev/db": "workspace:*",
+    "ethers": "^6.13.4",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

@@ -15,7 +15,7 @@ The platform answers: *for a given block or transaction, what MEV was extracted,
 | Requirement | Decision |
 |---|---|
 | Package manager / monorepo | pnpm workspaces + Turborepo ([ADR-001](adr/001-monorepo-tooling.md)) |
-| Language | TypeScript everywhere (mev-inspect-py stays Python, containerized) |
+| Language | TypeScript everywhere (the inspector is native TS, `@mev/inspect` — ADR-010) |
 | Lint / format | Biome |
 | Frontends | Vite (+ React) |
 | APIs | Express |
@@ -37,9 +37,11 @@ The platform answers: *for a given block or transaction, what MEV was extracted,
 │   ├── db/                  # Shared Postgres client, schema types, migrations for app-owned tables
 │   ├── eth/                 # EthClient, PriceOracle, ProfitabilityEngine (absorbed from src/)
 │   ├── trace-graph/         # Trace → graph model transforms (shared by trace-api and trace-web)
+│   ├── inspect/             # @mev/inspect — native TS inspector (ADR-010): decode/classify/detect
+│   ├── db/                  # Shared Postgres pool + owns the pipeline schema (migrate())
 │   └── config/              # Unified .env loading + zod-validated config schema
-├── mev-monitor/             # Reference implementation (JS) — gitignored local checkout
-│   └── mev-inspect-py/      # Patched inspector, consumed only as docker image (Python)
+├── mev-monitor/             # Reference implementation (JS/Python) — gitignored, offline reference only
+│   └── mev-inspect-py/      # Retired as runtime dep (ADR-010); ported to packages/inspect
 ├── l2beat/                  # Git submodule — temporary read-only reference, to be obsoleted
 ├── docs/
 │   ├── ARCHITECTURE.md      # This file
@@ -57,12 +59,13 @@ The platform answers: *for a given block or transaction, what MEV was extracted,
         reth/Erigon RPC (trace_block, debug_traceTransaction)
               │                          │
               ▼                          ▼
-   mev-inspect-py (on-demand      trace-api: getDebugTrace()
-   docker run per block)          call tree + contract sources
+   @mev/inspect (in-process,      trace-api: getDebugTrace()
+   on-demand per block)           call tree + contract sources
               │                          │
               ▼                          ▼
    ┌─────────────────────  Postgres (shared)  ─────────────────────┐
-   │ mev-inspect tables: classified_traces, swaps, arbitrages, …   │
+   │ pipeline tables: classified_traces, swaps, arbitrages, …      │
+   │ detector tables: mev_jit_liquidity, mev_nft_flips, …          │
    │ app tables: block_builders, block_bids, trace/source caches   │
    └───────────────────────────────────────────────────────────────┘
               │                          │                    │
@@ -76,8 +79,8 @@ The platform answers: *for a given block or transaction, what MEV was extracted,
 
 Two principles carried over from the reference implementations:
 
-- **Decode, then pattern-match.** mev-inspect-py decodes raw traces into structured facts; all MEV detectors (its own and the five extra ones) are read-only pattern matches over those facts. New detectors follow the same rule: query, never write, mev-inspect-py's tables.
-- **On-demand inspection.** No background indexer. The first request for a block triggers a containerized `mev-inspect-py` run (deduplicated per block number); results persist in Postgres.
+- **Decode, then pattern-match.** `@mev/inspect` (ADR-010) decodes raw traces into structured facts; the pattern-matchers and the five detectors run over those facts. The core decode/classify + arbitrage/sandwich/liquidation tables are written only by this pipeline; the five detectors write their own `mev_*` tables.
+- **On-demand, in-process inspection.** No separate indexer service. The first request for a block triggers an in-process `inspectBlock()` (deduplicated per block number); results persist in Postgres. Bulk coverage via the backfill queue; an optional head-follower keeps the head warm.
 
 ## Milestones
 
@@ -137,7 +140,7 @@ The first UI surface (ADR-009) wires the disco **Analyze panel** to agent-api: t
 
 ## Notes & Caveats
 
-- mev-inspect-py's USD-summary step fails without a price feed; treat that failure as success when the block row exists (see `mev-monitor/lib/inspector.js`).
+- The inspector is native TypeScript (`@mev/inspect`, [ADR-010](adr/010-native-inspector.md)); mev-inspect-py is retired as a runtime dependency. The old USD-summary failure workaround is gone (the native engine has no such step). Bug fixes + protocol-coverage notes from the port: `docs/design/mev-inspect-audit.md`.
 - DiscoUI's API is internal and unversioned — required parts are ported into the monorepo with provenance headers rather than imported; the pinned l2beat submodule is a temporary reference slated for removal ([ADR-004](adr/004-discoui-extraction.md)).
-- `mev-monitor/` is a gitignored local checkout (nested git repos); the platform's only runtime dependency on it is building `mev-inspect-py:local` via the compose `tools` profile.
+- `mev-monitor/` is a gitignored local checkout (nested git repos) with **no runtime role** since ADR-010 — kept only as an offline reference for verifying ported behavior.
 - MEV traces can be huge; the trace API returns a reduced graph model by default, raw traces only on request.

@@ -22,12 +22,21 @@ const configSchema = z.object({
   // configs land on the host as untracked files, same as UI-created projects.
   DISCOVERY_PROJECTS_DIR: z.string().default("l2beat/packages/config/src/projects"),
 
-  MEV_INSPECT_IMAGE: z.string().default("mev-inspect-py:local"),
-  // A hanging RPC node leaves inspect containers running forever otherwise
+  // Per-block budget for the in-process native inspector (ADR-010): a degraded
+  // RPC node can leave a block's trace fetch hanging, so each block is bounded.
   INSPECT_TIMEOUT_MS: z.coerce
     .number()
     .int()
     .default(5 * 60 * 1000),
+
+  // When true, explorer-api continuously inspects new blocks as the chain
+  // advances (in addition to the on-demand + backfill paths). Off by default.
+  // NB: parsed as a string, not z.coerce.boolean() — the latter turns the
+  // literal string "false" into `true` (Boolean("false") === true).
+  INSPECTOR_FOLLOW_HEAD: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
 
   ANTHROPIC_API_KEY: z.string().optional(),
   ETHERSCAN_API_KEY: z.string().optional(),

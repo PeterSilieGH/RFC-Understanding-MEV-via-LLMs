@@ -1,5 +1,6 @@
 import { loadConfig } from "@mev/config";
 import pg from "pg";
+import { DETECTOR_SCHEMA_SQL, PIPELINE_SCHEMA_SQL } from "./schema.js";
 
 const config = loadConfig();
 
@@ -61,3 +62,32 @@ export function ensureAppTables(): Promise<unknown> {
   }
   return appTablesReady;
 }
+
+let pipelineTablesReady: Promise<unknown> | undefined;
+
+/**
+ * The MEV pipeline schema (blocks / classified_traces / swaps / arbitrages /
+ * … / detector tables), owned by the native inspector since ADR-010. Runs the
+ * idempotent DDL in schema.ts; a no-op against a database still holding rows
+ * written by the retired mev-inspect-py tool. Replaces the old
+ * `alembic upgrade head` step that ran via the compose `tools` profile.
+ */
+export function ensurePipelineTables(): Promise<unknown> {
+  if (!pipelineTablesReady) {
+    pipelineTablesReady = pool
+      .query(PIPELINE_SCHEMA_SQL)
+      .then(() => pool.query(DETECTOR_SCHEMA_SQL));
+  }
+  return pipelineTablesReady;
+}
+
+/**
+ * Bring the whole shared schema up to date (app-owned cache tables + the MEV
+ * pipeline tables). Call once at service boot. Idempotent and safe to run
+ * concurrently across services — every statement is CREATE … IF NOT EXISTS.
+ */
+export function migrate(): Promise<unknown> {
+  return Promise.all([ensureAppTables(), ensurePipelineTables()]);
+}
+
+export { PIPELINE_SCHEMA_SQL, DETECTOR_SCHEMA_SQL } from "./schema.js";

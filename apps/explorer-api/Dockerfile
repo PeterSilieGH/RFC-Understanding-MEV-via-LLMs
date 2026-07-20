@@ -6,15 +6,16 @@ WORKDIR /repo
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY packages/config ./packages/config
 COPY packages/db ./packages/db
+# @mev/inspect: the native TypeScript inspector (ADR-010). Its abis/ directory
+# ships as source alongside dist/ (abi.ts resolves it relative to the package).
+COPY packages/inspect ./packages/inspect
 COPY apps/explorer-api ./apps/explorer-api
 RUN pnpm install --frozen-lockfile --filter @mev/explorer-api... \
     && pnpm --filter @mev/explorer-api... build
 
 FROM node:22-slim
-# docker CLI only (no daemon): explorer-api spawns mev-inspect-py containers
-# on the host daemon via the mounted /var/run/docker.sock (ADR-002).
-RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
-    && rm -rf /var/lib/apt/lists/*
+# In-process inspection (ADR-010): no docker CLI / socket, no per-block
+# containers — explorer-api decodes blocks itself via @mev/inspect.
 WORKDIR /repo
 COPY --from=build /repo ./
 EXPOSE 3000

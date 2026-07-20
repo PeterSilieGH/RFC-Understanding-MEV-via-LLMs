@@ -1,5 +1,5 @@
 import { loadConfig } from "@mev/config";
-import { pool } from "@mev/db";
+import { migrate, pool } from "@mev/db";
 import { ethers } from "ethers";
 import express from "express";
 import {
@@ -13,6 +13,7 @@ import { getBlockBuilder, getBuilderStats } from "./builder.js";
 import { getEurPrices } from "./eurPrices.js";
 import { getAddressActivity, getLeaderboard, getPoolHeatmap, getTopSearchers } from "./insights.js";
 import { inspectBlockIfNeeded } from "./inspector.js";
+import { startInspectorLoop } from "./inspectorLoop.js";
 import { getMempoolStats } from "./mempoolStats.js";
 import * as mempoolWatcher from "./mempoolWatcher.js";
 import { getBlockMev } from "./mev.js";
@@ -239,6 +240,20 @@ app.get("/api/top-searchers", async (_req, res) => {
   }
 });
 
-app.listen(config.EXPLORER_API_PORT, () => {
-  console.log(`explorer-api listening on http://localhost:${config.EXPLORER_API_PORT}`);
-});
+// Own the shared schema at boot (ADR-010): explorer-api is the pipeline's
+// writer, so it brings up both the app-owned cache tables and the MEV pipeline
+// tables the native inspector fills. Idempotent — a no-op once created. This
+// replaces the retired `alembic upgrade head` step that used to run via the
+// compose `tools` profile against mev-inspect-py.
+migrate()
+  .catch((err) => {
+    console.error("schema migration failed:", err);
+    process.exit(1);
+  })
+  .then(() => {
+    app.listen(config.EXPLORER_API_PORT, () => {
+      console.log(`explorer-api listening on http://localhost:${config.EXPLORER_API_PORT}`);
+    });
+    // Optionally keep the chain head continuously inspected (ADR-010).
+    if (config.INSPECTOR_FOLLOW_HEAD) startInspectorLoop();
+  });

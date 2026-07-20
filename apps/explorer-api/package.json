@@ -13,6 +13,7 @@
   "dependencies": {
     "@mev/config": "workspace:*",
     "@mev/db": "workspace:*",
+    "@mev/inspect": "workspace:*",
     "ethers": "^6.13.4",
     "express": "^5.2.1"
   },

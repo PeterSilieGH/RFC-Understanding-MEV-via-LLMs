@@ -1,9 +1,11 @@
 import { pool } from "@mev/db";
-import { getJitLiquidityForBlock } from "./detectors/jitLiquidity.js";
-import { getLiquidationRacesForBlock } from "./detectors/liquidationRace.js";
-import { getLiquidationSandwichesForBlock } from "./detectors/liquidationSandwich.js";
-import { getNftFlipsForBlock } from "./detectors/nftFlip.js";
-import { getNonAtomicArbitrageForBlock } from "./detectors/nonAtomicArbitrage.js";
+import {
+  getJitLiquidityForBlock,
+  getLiquidationRacesForBlock,
+  getLiquidationSandwichesForBlock,
+  getNftFlipsForBlock,
+  getNonAtomicArbitrageForBlock,
+} from "./detectorReads.js";
 import { recordMempoolClassifications } from "./mempoolStats.js";
 import * as mempoolWatcher from "./mempoolWatcher.js";
 import { type FormattedAmount, formatAmount, getTokenInfo } from "./tokens.js";
@@ -59,7 +61,6 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
     liquidationRows,
     swapRows,
     nftTradeRows,
-    punkSnipeRows,
     jitEvents,
     nonAtomicArbEvents,
     liquidationSandwiches,
@@ -114,11 +115,6 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
       `SELECT transaction_hash, protocol, seller_address, buyer_address,
               payment_token_address, payment_amount, collection_address, token_id
        FROM nft_trades WHERE block_number = $1`,
-      [blockNumber],
-    ),
-    pool.query(
-      `SELECT transaction_hash, from_address, punk_index, acceptance_price
-       FROM punk_snipes WHERE block_number = $1`,
       [blockNumber],
     ),
     getJitLiquidityForBlock(blockNumber),
@@ -244,15 +240,6 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
       paymentAmountRaw: row.payment_amount,
       collectionAddress: row.collection_address,
       tokenId: row.token_id,
-    });
-  }
-
-  for (const row of punkSnipeRows.rows) {
-    entry(row.transaction_hash).mev.push({
-      type: "punk_snipe",
-      fromAddress: row.from_address,
-      punkIndex: row.punk_index,
-      acceptancePriceWei: row.acceptance_price,
     });
   }
 
