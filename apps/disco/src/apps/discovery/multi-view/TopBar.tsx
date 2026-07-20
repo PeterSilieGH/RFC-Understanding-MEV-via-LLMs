@@ -16,6 +16,7 @@ import { useTerminalStore } from '../panel-terminal/store'
 import { useDiscoveryCommand } from '../panel-terminal/useDiscoveryCommand'
 import { fmtAmount } from '../panel-trace/mev-format'
 import { Search } from '../search/Search'
+import { ModelSelect } from './ModelSelect'
 import { SettingsDialog } from './SettingsDialog'
 // DIVERGENCE(mev): store resolved via context so the trace workspace
 // (ADR-008) reuses this bar against its own docking store
@@ -151,7 +152,10 @@ export function TopBar(props: { project: string }) {
           </Button>
         </div>
 
-        <SettingsDialog />
+        <div className="flex items-center gap-3 border-coffee-400/30 border-l pl-3">
+          <ModelSelect />
+          <SettingsDialog />
+        </div>
       </div>
     </div>
   )

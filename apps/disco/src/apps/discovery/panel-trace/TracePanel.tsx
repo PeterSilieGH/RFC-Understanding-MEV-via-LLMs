@@ -236,21 +236,36 @@ function useFocusRequests(
 }
 
 /**
- * Selecting a call node in the graph resolves to its contract address in the
- * shared panel-store, so values/code/preview follow (ADR-008). Two calls
- * into the same contract select the same address - that is the intended
- * semantic; the per-call view lives in the trace sidebar.
+ * Selecting call nodes in the graph resolves them to contract addresses in the
+ * shared panel-store, so values/code/preview follow (ADR-008). Two calls into
+ * the same contract select the same address - that is the intended semantic;
+ * the per-call view lives in the trace sidebar.
+ *
+ * DIVERGENCE(mev): the Analyze panel (ADR-009) operates on the multi-select
+ * `highlighted` set. Shift-clicking / rubber-banding several call nodes in the
+ * trace graph must surface ALL their contracts, not only the first - so we map
+ * every selected node to its (deduped) contract address and publish the whole
+ * list. `selected` (single, drives values/code) stays the first of them.
  */
 function useSyncGraphSelectionToPanelStore(workspace: TraceWorkspace | undefined) {
   const graphSelected = traceNodesStore((state) => state.selected)
   const select = usePanelStore((state) => state.select)
+  const highlight = usePanelStore((state) => state.highlight)
   useEffect(() => {
-    const first = graphSelected[0]
-    if (!first || !workspace?.contracts) return
-    const node = traceNodesStore.getState().nodes.find((n) => n.id === first)
-    const contract = node && workspace.contracts[node.address.toLowerCase()]
-    if (contract) select(contract.address)
-  }, [graphSelected, workspace, select])
+    if (!workspace?.contracts) return
+    const nodes = traceNodesStore.getState().nodes
+    const addresses: string[] = []
+    for (const id of graphSelected) {
+      const node = nodes.find((n) => n.id === id)
+      const contract = node && workspace.contracts[node.address.toLowerCase()]
+      if (contract && !addresses.includes(contract.address)) {
+        addresses.push(contract.address)
+      }
+    }
+    if (addresses.length === 0) return
+    highlight(addresses)
+    select(addresses[0])
+  }, [graphSelected, workspace, select, highlight])
 }
 
 function colorForCall(call: TraceCallNode, isSwap: boolean): number {

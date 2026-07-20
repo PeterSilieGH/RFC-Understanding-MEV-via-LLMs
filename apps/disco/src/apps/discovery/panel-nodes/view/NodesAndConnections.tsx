@@ -1,4 +1,6 @@
 import { useMemo } from 'react'
+import { useParams } from 'react-router-dom'
+import { useAgentMarksStore } from '../../panel-agent/store'
 import { useGlobalSettingsStore } from '../../store/global-settings-store'
 import type { Node } from '../store/State'
 import { useStore } from '../store/store'
@@ -37,6 +39,20 @@ export function NodesAndConnections() {
   )
   const markUnreachableEntries = useGlobalSettingsStore(
     (s) => s.markUnreachableEntries,
+  )
+
+  // DIVERGENCE(mev): analyze-skill coverage for this project's nodes (ADR-009).
+  const { project } = useParams()
+  const projectMarks = useAgentMarksStore((s) =>
+    project ? s.byProject[project] : undefined,
+  )
+  const marks = useMemo(
+    () => ({
+      code: new Set(projectMarks?.code ?? []),
+      value: new Set(projectMarks?.value ?? []),
+      important: new Set(projectMarks?.important ?? []),
+    }),
+    [projectMarks],
   )
 
   const view = useMemo<DerivedView>(
@@ -83,6 +99,7 @@ export function NodesAndConnections() {
       {svg}
       {view.visible.map((node) => {
         const flags = view.flags.get(node.id) as NodeFlags
+        const addr = node.address.toLowerCase()
         return (
           <NodeView
             key={node.id}
@@ -93,6 +110,9 @@ export function NodesAndConnections() {
             isOverlapping={flags.isOverlapping}
             fieldHighlightedMask={flags.fieldHighlightedMask}
             fieldTargetHiddenMask={flags.fieldTargetHiddenMask}
+            hasCodeMark={marks.code.has(addr)}
+            hasValueMark={marks.value.has(addr)}
+            isImportant={marks.important.has(addr)}
           />
         )
       })}

@@ -11,6 +11,7 @@ import type {
 } from '../../../api/types'
 import { Checkbox } from '../../../components/Checkbox'
 import { LoadingState } from '../../../components/LoadingState'
+import { VerdictSection } from '../panel-agent/VerdictSection'
 import { AddressDisplay } from '../panel-values/AddressDisplay'
 import { usePanelStore } from '../store/panel-store'
 
@@ -28,30 +29,36 @@ export function PreviewPanel() {
     queryFn: () => getPreview(project),
   })
   const response = previewResponse.data
-  if (response === undefined) {
-    return <LoadingState />
-  }
 
   return (
     <div className="flex h-full w-full flex-col text-sm">
-      <div className="sticky top-0 z-10">
-        <OptionsPanel
-          showOnlySelected={showOnlySelected}
-          setShowOnlySelected={setShowOnlySelected}
-        />
-      </div>
-      <div className="overflow-auto">
-        <PermissionsPreview
-          permissionsPerChain={response.permissionsPerChain}
-          selectedAddress={selectedAddress}
-          showOnlySelected={showOnlySelected}
-        />
-        <ContractsPreview
-          contractsPerChain={response.contractsPerChain}
-          selectedAddress={selectedAddress}
-          showOnlySelected={showOnlySelected}
-        />
-      </div>
+      {/* DIVERGENCE(mev): the agentic verdict for this transaction/incident
+          (ADR-009) sits above the stock preview. */}
+      <VerdictSection project={project} />
+      {response === undefined ? (
+        <LoadingState />
+      ) : (
+        <>
+          <div className="sticky top-0 z-10">
+            <OptionsPanel
+              showOnlySelected={showOnlySelected}
+              setShowOnlySelected={setShowOnlySelected}
+            />
+          </div>
+          <div className="overflow-auto">
+            <PermissionsPreview
+              permissionsPerChain={response.permissionsPerChain}
+              selectedAddress={selectedAddress}
+              showOnlySelected={showOnlySelected}
+            />
+            <ContractsPreview
+              contractsPerChain={response.contractsPerChain}
+              selectedAddress={selectedAddress}
+              showOnlySelected={showOnlySelected}
+            />
+          </div>
+        </>
+      )}
     </div>
   )
 }

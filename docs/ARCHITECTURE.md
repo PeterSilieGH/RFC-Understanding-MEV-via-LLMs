@@ -126,6 +126,8 @@ The standalone trace view grows into a full DiscoUI workspace: List (incident-sh
 
 `apps/agent-api` embeds the pi coding harness with tools to read the shared Postgres, fetch traces via trace-api, and retrieve contract sources — so an agent can answer "explain what this transaction did and why it was profitable" grounded in the same data the UI shows. Sessions stream to the frontends; `.pi/` skills define the research workflows.
 
+The first UI surface (ADR-009) wires the disco **Analyze panel** to agent-api: three skills — *analyze-code* and *analyze-value* review the selected nodes' Code / Values "copy panel context" as an MEV expert (code is sent as parsed function signatures, with a `get_function_code` tool for on-demand bodies), and *build-preview* (triggered from the Preview panel) combines the stored analysis transcripts into a verdict about the transaction or the whole multi-tx incident. Runs stream NDJSON, persist to an app-owned `agent_runs` table, and mark covered nodes with two ticks. agent-api bakes in no model or key — credentials and the model come from the user's pi agent dir; `.pi/SYSTEM.md` overrides the system prompt.
+
 **Done when:** from a trace view, a user can start an agent session about the visible transaction and receive a grounded, citable explanation referencing actual trace calls and source lines.
 
 ## External Dependencies

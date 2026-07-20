@@ -21,6 +21,7 @@ import { IconSigma } from '../../../icons/IconSigma'
 import { IconStamp } from '../../../icons/IconStamp'
 import { IconTerminal } from '../../../icons/IconTerminal'
 import { IconWebApp } from '../../../icons/IconWebApp'
+import { AgentAnalyzePanel } from '../panel-agent/AgentAnalyzePanel'
 import { CodePanel } from '../panel-code/CodePanel'
 import { ConfigPanel } from '../panel-config/ConfigPanel'
 import { DiffHistoryPanel } from '../panel-diff-history/DiffHistoryPanel'
@@ -28,19 +29,21 @@ import { ListPanel } from '../panel-list/ListPanel'
 import { PreviewPanel } from '../panel-preview/PreviewPanel'
 import { TemplatePanel } from '../panel-template/TemplatePanel'
 import { TerminalPanel } from '../panel-terminal/TerminalPanel'
-import { AnalyzeTracePanel } from '../panel-trace/AnalyzeTracePanel'
 import { NodesTracePanel } from '../panel-trace/NodesTracePanel'
 import { ListTracePanel } from '../panel-trace/TraceListPanel'
 import { ValuesPanel } from '../panel-values/ValuesPanel'
 import { TabExtras } from './TabExtras'
 
+// DIVERGENCE(mev): tab order is the MEV workflow order — pick nodes (list /
+// nodes), analyze them (analyze), read the incident verdict (preview →
+// "incident"), then drill into code / values — followed by the stock tools.
 export const PANEL_IDS = [
   'list',
-  'values',
   'nodes',
-  'code',
-  'preview',
   'analyze',
+  'preview',
+  'code',
+  'values',
   'terminal',
   'template',
   'config',
@@ -48,6 +51,13 @@ export const PANEL_IDS = [
 ] as const
 
 export type PanelId = (typeof PANEL_IDS)[number]
+
+// DIVERGENCE(mev): display labels that differ from the panel id. The id stays
+// stable (storage keys, persisted layouts) while the tab shows a friendlier
+// name — the Preview panel is the MEV "Incident" view (ADR-009).
+const PANEL_LABELS: Partial<Record<PanelId, string>> = {
+  preview: 'incident',
+}
 
 interface Panel {
   icon: FC<{ className?: string }>
@@ -64,8 +74,10 @@ const PANELS: Record<PanelId, Panel> = {
   nodes: { icon: IconNodes, body: NodesTracePanel },
   code: { icon: IconCode, body: CodePanel },
   preview: { icon: IconWebApp, body: PreviewPanel },
-  // DIVERGENCE(mev): in the trace workspace the tab is a disabled stub (M5)
-  analyze: { icon: IconChatbot, body: AnalyzeTracePanel },
+  // DIVERGENCE(mev): agentic MEV analysis via the pi harness (ADR-009),
+  // route-agnostic — runs against the nodes selected in the graph on both the
+  // project and trace-workspace routes; supersedes the stock l2b analyzer.
+  analyze: { icon: IconChatbot, body: AgentAnalyzePanel },
   terminal: { icon: IconTerminal, body: TerminalPanel },
   template: { icon: IconStamp, body: TemplatePanel },
   config: { icon: IconGear, body: ConfigPanel },
@@ -85,7 +97,7 @@ function PanelLabel(props: { id: PanelId }) {
   return (
     <span className="flex items-center gap-1.5">
       <Icon className="size-3.5 shrink-0" />
-      <span>{props.id}</span>
+      <span>{PANEL_LABELS[props.id] ?? props.id}</span>
     </span>
   )
 }

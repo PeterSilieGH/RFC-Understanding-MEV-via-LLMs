@@ -24,6 +24,16 @@ server {
     proxy_read_timeout 120s;
   }
 
+  location /api/agent/ {
+    proxy_pass http://127.0.0.1:${AGENT_API_PORT};
+    proxy_set_header Host $host;
+    # analyze/verdict stream NDJSON token-by-token from the LLM: disable
+    # buffering so deltas reach the panel live, and allow long-running runs.
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 600s;
+  }
+
   location /api/ {
     proxy_pass http://127.0.0.1:${DISCO_API_PORT};
     proxy_set_header Host $host;

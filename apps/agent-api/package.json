@@ -1,0 +1,29 @@
+{
+  "name": "@mev/agent-api",
+  "version": "1.0.0",
+  "description": "Agentic analysis API — pi harness skills for the analyze panel (ADR-006, ADR-009).",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.79.1",
+    "@earendil-works/pi-coding-agent": "^0.79.1",
+    "@mev/config": "workspace:*",
+    "@mev/db": "workspace:*",
+    "express": "^5.2.1",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

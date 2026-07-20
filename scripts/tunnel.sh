@@ -20,7 +20,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/mev-tunnel-$$"
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/mev-tunnel"
 PIDFILE="$STATE_DIR/pids"
 LOGFILE="$STATE_DIR/tunnel.log"
 
@@ -49,6 +49,7 @@ Commands:
   status                           Show active tunnels
   list                             List configured tunnels
   stop --all                       Stop all tunnels
+  test  <name>                    Curl the RPC endpoint to verify connectivity
 
 Examples:
   tunnel.sh start ethereum                    # dsn-rfc, port 8545
@@ -56,6 +57,7 @@ Examples:
   tunnel.sh start custom-host -p 8545         # any SSH host
   tunnel.sh stop ethereum
   tunnel.sh status
+  tunnel.sh test ethereum                     # verify RPC responds
 EOF
 }
 
@@ -88,12 +90,12 @@ resolve_ssh_host() {
 
 cmd_start() {
   local name="$1"; shift
-  local remote_port=""
+  local override_rport=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -p) remote_port="$2"; shift 2 ;;
-      *)  remote_port="$1"; shift ;;
+      -p) override_rport="$2"; shift 2 ;;
+      *)  override_rport="$1"; shift ;;
     esac
   done
 
@@ -120,8 +122,8 @@ cmd_start() {
   fi
 
   local ssh_host="${host_port%%:*}"
-  local rport="${host_port##*:}"
-  local lport="${remote_port:-$(local_port "$name")}"
+  local rport="${override_rport:-${host_port##*:}}"
+  local lport="$(local_port "$name")"
 
   # Check if already running
   if ss -tlnp 2>/dev/null | grep -q ":$lport "; then
@@ -184,22 +186,43 @@ cmd_stop() {
   local name="$1"
   if [[ "$name" == "--all" ]]; then
     log "Stopping all tunnels..."
-    while IFS=' ' read -r pid n lport _; do
-      kill "$pid" 2>/dev/null && log "Stopped $n (PID $pid)"
-    done < "$PIDFILE" 2>/dev/null
-    : > "$PIDFILE"
+    if [[ -f "$PIDFILE" ]]; then
+      while IFS=' ' read -r pid n lport _; do
+        kill "$pid" 2>/dev/null && log "Stopped $n (PID $pid)"
+      done < "$PIDFILE"
+      : > "$PIDFILE"
+    fi
+    pkill -f "ssh -NT.*ServerAliveInterval" 2>/dev/null || true
     return 0
   fi
 
-  local pid
-  pid=$(grep " $name " "$PIDFILE" | awk '{print $1}' | head -1)
-  if [[ -z "$pid" ]]; then
+  local pid="" lport=""
+  if [[ -f "$PIDFILE" ]]; then
+    pid=$(grep " $name " "$PIDFILE" | awk '{print $1}' | head -1)
+    lport=$(grep " $name " "$PIDFILE" | awk '{print $3}' | head -1)
+  fi
+
+  local killed=false
+  if [[ -n "$pid" ]] && kill "$pid" 2>/dev/null; then
+    log "Stopped tunnel '$name' (PID $pid)"
+    killed=true
+  fi
+
+  # Fallback: pkill by forwarded port — survives stale/missing pidfile
+  [[ -z "$lport" ]] && lport="$(local_port "$name")"
+  if pkill -f "ssh.*127\.0\.0\.1:${lport}:localhost" 2>/dev/null; then
+    log "Killed SSH process for '$name' (port $lport)"
+    killed=true
+  fi
+
+  if [[ -f "$PIDFILE" ]]; then
+    grep -v " $name " "$PIDFILE" > "$PIDFILE.tmp" 2>/dev/null && mv "$PIDFILE.tmp" "$PIDFILE" || true
+  fi
+
+  if [[ "$killed" == false ]]; then
     log "No tunnel found for '$name'."
     return 1
   fi
-
-  kill "$pid" 2>/dev/null && log "Stopped tunnel '$name' (PID $pid)"
-  grep -v " $name " "$PIDFILE" > "$PIDFILE.tmp" && mv "$PIDFILE.tmp" "$PIDFILE"
 }
 
 cmd_status() {
@@ -219,6 +242,34 @@ cmd_status() {
       grep -v "^$pid " "$PIDFILE" > "$PIDFILE.tmp" && mv "$PIDFILE.tmp" "$PIDFILE"
     fi
   done < "$PIDFILE"
+}
+
+cmd_test() {
+  local name="${1:-ethereum}"
+  local lport
+  lport="$(local_port "$name")"
+  local url="http://localhost:$lport"
+
+  echo "Testing RPC at $url (tunnel: $name)..."
+  local response
+  response=$(curl -sf --max-time 5 \
+    -X POST "$url" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' 2>&1) || {
+    echo "✗ No response from $url — is the tunnel running? (./tunnel.sh start $name)"
+    exit 1
+  }
+
+  local block_hex
+  block_hex=$(echo "$response" | grep -o '"result":"0x[^"]*"' | grep -o '0x[^"]*')
+  if [[ -n "$block_hex" ]]; then
+    local block_dec=$(( block_hex ))
+    echo "✓ RPC live — latest block: $block_dec (${block_hex})"
+  else
+    echo "✗ Unexpected response:"
+    echo "$response"
+    exit 1
+  fi
 }
 
 cmd_list() {
@@ -243,6 +294,7 @@ case "$CMD" in
   stop)   cmd_stop "$@" ;;
   status) cmd_status ;;
   list)   cmd_list ;;
+  test)   cmd_test "$@" ;;
   -h|--help|help) usage; exit 0 ;;
   "")     usage; exit 1 ;;
   *)      echo "Unknown command: $CMD"; usage; exit 1 ;;

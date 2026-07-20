@@ -197,17 +197,38 @@ function CallEntry(props: {
   depth?: number
 }) {
   const select = usePanelStore((state) => state.select)
+  const highlighted = usePanelStore((state) => state.highlighted)
+  const highlight = usePanelStore((state) => state.highlight)
   const requestFocus = useTraceWorkspaceStore((state) => state.requestFocus)
   const focusRequest = useTraceWorkspaceStore((state) => state.focusRequest)
   const isFocused =
     focusRequest?.txHash === props.txHash && focusRequest?.nodeId === props.nodeId
+  const contractAddress = props.address
+    ? props.workspace?.contracts?.[props.address.toLowerCase()]?.address
+    : undefined
+  const isHighlighted = contractAddress
+    ? highlighted.includes(contractAddress)
+    : false
 
-  function onClick() {
+  function onClick(event: React.MouseEvent) {
     // panel-store selection is address-keyed (values/code/preview describe
     // contracts); the graph focus targets the concrete call node
     const contract = props.address
       ? props.workspace?.contracts?.[props.address.toLowerCase()]
       : undefined
+    // DIVERGENCE(mev): a modifier click (shift/ctrl/cmd) toggles this call's
+    // contract in the Analyze multi-select set (`highlighted`, ADR-009) without
+    // moving the single `selected` focus — the same gesture the stock List and
+    // the trace graph use to build a multi-node analysis.
+    if ((event.shiftKey || event.ctrlKey || event.metaKey) && contract) {
+      const addr = contract.address
+      highlight(
+        highlighted.includes(addr)
+          ? highlighted.filter((a) => a !== addr)
+          : [...highlighted, addr],
+      )
+      return
+    }
     if (contract) select(contract.address)
     requestFocus(props.txHash, props.nodeId)
   }
@@ -217,7 +238,8 @@ function CallEntry(props: {
       className={clsx(
         'flex min-h-[22px] cursor-pointer select-none items-center gap-1 whitespace-pre text-sm',
         isFocused && 'bg-autumn-300 text-black',
-        !isFocused && 'bg-coffee-800 hover:bg-aux-brown',
+        !isFocused && isHighlighted && 'bg-aux-brown text-coffee-100',
+        !isFocused && !isHighlighted && 'bg-coffee-800 hover:bg-aux-brown',
       )}
       style={{ paddingLeft: `${16 + Math.min(props.depth ?? 0, 12) * 7}px` }}
       onClick={onClick}

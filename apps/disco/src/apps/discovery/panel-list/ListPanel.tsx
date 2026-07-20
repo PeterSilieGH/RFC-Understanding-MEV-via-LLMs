@@ -160,8 +160,16 @@ function ListItemContracts(props: {
 }
 
 function AddressEntry({ entry }: { entry: ApiAddressEntry }) {
-  const isSelected = usePanelStore((state) => state.selected === entry.address)
+  const selected = usePanelStore((state) => state.selected)
+  const highlighted = usePanelStore((state) => state.highlighted)
   const select = usePanelStore((state) => state.select)
+  const highlight = usePanelStore((state) => state.highlight)
+  // DIVERGENCE(mev): the Analyze panel operates on the multi-select set
+  // (`highlighted`, ADR-009), so the List must be able to build one — a plain
+  // click selects a single node, a modifier click (shift/ctrl/cmd) toggles the
+  // entry in the set. Reflect either as selected.
+  const isSelected =
+    selected === entry.address || highlighted.includes(entry.address)
   const markUnreachableEntries = useGlobalSettingsStore(
     (s) => s.markUnreachableEntries,
   )
@@ -170,6 +178,23 @@ function AddressEntry({ entry }: { entry: ApiAddressEntry }) {
   )
   const isGrayedOut = isHidden || (markUnreachableEntries && !entry.isReachable)
 
+  function onSelect(event: React.MouseEvent) {
+    const additive = event.shiftKey || event.ctrlKey || event.metaKey
+    if (!additive) {
+      select(entry.address)
+      highlight([entry.address])
+      return
+    }
+    // Additive click only grows/shrinks the multi-select set. It deliberately
+    // does NOT touch `selected`: changing the focused address re-runs the nodes
+    // panel's selection sync, which would collapse `highlighted` back to that
+    // single node and defeat the multi-select.
+    const next = highlighted.includes(entry.address)
+      ? highlighted.filter((a) => a !== entry.address)
+      : [...highlighted, entry.address]
+    highlight(next)
+  }
+
   return (
     <li
       className={clsx(
@@ -177,7 +202,7 @@ function AddressEntry({ entry }: { entry: ApiAddressEntry }) {
         isSelected && 'bg-autumn-300 text-black',
         !isSelected && 'bg-coffee-800 hover:bg-aux-brown',
       )}
-      onClick={() => select(entry.address)}
+      onClick={onSelect}
       style={{
         opacity: isGrayedOut ? 0.2 : 1,
         filter: isGrayedOut ? 'grayscale(100%)' : 'none',

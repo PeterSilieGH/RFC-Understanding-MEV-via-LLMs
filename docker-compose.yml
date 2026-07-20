@@ -93,6 +93,35 @@ services:
     depends_on:
       - explorer-api
 
+  # Agentic analysis for the disco Analyze panel (ADR-006/009). Embeds the pi
+  # SDK; one in-memory session per request. Base config (credentials + model
+  # selection) is NOT baked in - it is read from the pi agent dir bind-mounted
+  # from the host and pointed at via PI_CODING_AGENT_DIR, so which model runs is
+  # the user's pi configuration. Runs as the host uid so it can read the agent
+  # dir's auth.json (mode 600); the mount is writable because pi takes a
+  # proper-lockfile lock even to read auth.json (sessions stay in-memory, so no
+  # session files are written). The project .pi/ (baked into the image)
+  # supplements it: .pi/SYSTEM.md overrides the system prompt.
+  agent-api:
+    build:
+      context: .
+      dockerfile: apps/agent-api/Dockerfile
+    network_mode: host
+    user: "${DISCO_UID:-1000}:${DISCO_GID:-1000}"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      PI_CODING_AGENT_DIR: /pi-agent
+      HOME: /tmp
+    volumes:
+      - ${PI_AGENT_DIR:-${HOME}/.pi/agent}:/pi-agent
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   trace-api:
     build:
       context: .
@@ -175,10 +204,12 @@ services:
       DISCO_API_PORT: ${DISCO_API_PORT:-2021}
       TRACE_API_PORT: ${TRACE_API_PORT:-2022}
       EXPLORER_API_PORT: ${EXPLORER_API_PORT:-3000}
+      AGENT_API_PORT: ${AGENT_API_PORT:-3100}
     depends_on:
       - disco-api
       - trace-api
       - explorer-api
+      - agent-api
 
 volumes:
   mev_inspect_pgdata:

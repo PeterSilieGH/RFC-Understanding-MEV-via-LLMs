@@ -22,6 +22,13 @@ export interface NodeViewProps {
   // render.
   fieldHighlightedMask: string
   fieldTargetHiddenMask: string
+  // DIVERGENCE(mev): the analyze-code / analyze-value skills have covered this
+  // node's address (ADR-009). Two distinct ticks in the header.
+  hasCodeMark: boolean
+  hasValueMark: boolean
+  // DIVERGENCE(mev): the build-verdict skill flagged this node as important to
+  // the incident but not yet analyzed (ADR-009). Shown only until it is covered.
+  isImportant: boolean
 }
 
 function NodeViewImpl(props: NodeViewProps) {
@@ -65,7 +72,12 @@ function NodeViewImpl(props: NodeViewProps) {
         >
           <AddressIcon type={props.node.addressType} />
           <div className="truncate">{props.node.name}</div>
-          <div className="flex items-center">
+          <div className="flex items-center gap-0.5">
+            <AnalyzeTicks
+              hasCodeMark={props.hasCodeMark}
+              hasValueMark={props.hasValueMark}
+              isImportant={props.isImportant}
+            />
             {props.node.isInitial && <IconInitial className="text-aux-green" />}
             {props.node.hasTemplate && (
               <IconInitial className="text-aux-orange" />
@@ -122,9 +134,48 @@ export const NodeView = memo(NodeViewImpl, (prev, next) => {
     prev.isGrayedOut === next.isGrayedOut &&
     prev.isOverlapping === next.isOverlapping &&
     prev.fieldHighlightedMask === next.fieldHighlightedMask &&
-    prev.fieldTargetHiddenMask === next.fieldTargetHiddenMask
+    prev.fieldTargetHiddenMask === next.fieldTargetHiddenMask &&
+    prev.hasCodeMark === next.hasCodeMark &&
+    prev.hasValueMark === next.hasValueMark &&
+    prev.isImportant === next.isImportant
   )
 })
+
+// DIVERGENCE(mev): node header markers (ADR-009) — a red "C" once analyze-code
+// has covered this address, a red "V" once analyze-value has (red for contrast
+// against the node title), and an amber "!" when the verdict flagged the node
+// as important but nothing has analyzed it yet (suppressed once covered).
+function AnalyzeTicks(props: {
+  hasCodeMark: boolean
+  hasValueMark: boolean
+  isImportant: boolean
+}) {
+  const flagImportant =
+    props.isImportant && !props.hasCodeMark && !props.hasValueMark
+  if (!props.hasCodeMark && !props.hasValueMark && !flagImportant) return null
+  return (
+    <span className="flex items-center gap-px font-bold text-[9px] leading-none">
+      {props.hasCodeMark && (
+        <span className="text-aux-red" title="Analyzed: code">
+          C
+        </span>
+      )}
+      {props.hasValueMark && (
+        <span className="text-aux-red" title="Analyzed: value">
+          V
+        </span>
+      )}
+      {flagImportant && (
+        <span
+          className="text-aux-orange"
+          title="Flagged important by the verdict — not yet analyzed"
+        >
+          !
+        </span>
+      )}
+    </span>
+  )
+}
 
 function getTitleBackground(node: Node): string {
   const { color, isDark } = getColor(node)
