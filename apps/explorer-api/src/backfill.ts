@@ -1,12 +1,17 @@
+import { loadConfig } from "@mev/config";
 import { pool } from "@mev/db";
-import { inspectBlockIfNeeded, isInspected } from "./inspector.js";
+import { getProvider } from "@mev/rpc";
+import { backgroundInspect, isInspected } from "./inspector.js";
 
 // Background inspection queue (wp-explorer-redesign E6): walks a block range
-// left-to-right through the same inspectBlockIfNeeded dedupe the live view
-// uses. Strictly sequential (concurrency 1) so a backfill can never pile
-// containers onto a degraded RPC node; skip-on-error with one retry, and a
-// cool-down after failures. Interactive views are never blocked - they go
-// through their own inspect calls and the in-memory dedupe.
+// left-to-right through the shared serial background queue (ADR-011 §1). It is
+// now an internal seed/re-inspect control — the primary driver is the
+// continuous fixed-range fill worker below (X10). Strictly sequential
+// (concurrency 1) so a backfill can never pile load onto the connection-capped
+// RPC node; skip-on-error with one retry, and a cool-down after failures.
+// Interactive views are never blocked — they go through inspectBlockIfNeeded
+// directly and the in-memory dedupe.
+const config = loadConfig();
 
 export interface BackfillError {
   blockNumber: number;
@@ -104,7 +109,7 @@ async function run(fromBlock: number, targetBlock: number): Promise<void> {
     let inspectedOk = false;
     for (let attempt = 0; attempt < 2 && !inspectedOk; attempt++) {
       try {
-        await inspectBlockIfNeeded(block);
+        await backgroundInspect(block);
         inspectedOk = true;
         status.inspected++;
       } catch (err) {
@@ -125,6 +130,121 @@ async function run(fromBlock: number, targetBlock: number): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---- Continuous fixed-range fill worker (X10, ADR-011 §1) ------------------
+// A service-lifecycle backfill that keeps [INSPECT_FLOOR_BLOCK … head] filled.
+// Unlike startBackfill (request-scoped), this owns no request: it walks forward
+// forever, jumping over already-covered spans, and idles once caught up until
+// the chain advances. All inspection goes through the shared serial background
+// queue (backgroundInspect), so it never races the head-follower or a manual
+// backfill on the capped node. Coverage is derived from Postgres, so a restart
+// resumes where the corpus left off.
+
+export interface FillStatus {
+  running: boolean;
+  floor: number;
+  cursor: number | null;
+  head: number | null;
+  inspected: number;
+  failed: number;
+  caughtUp: boolean;
+  lastError: string | null;
+  startedAt: string | null;
+}
+
+const CONFIRMATIONS = 2; // stay a couple blocks behind head for reorg safety
+const FILL_PAUSE_MS = 250;
+const FILL_ERROR_COOLDOWN_MS = 5_000;
+const FILL_IDLE_MS = 12_000; // caught up — wait ~one block time for the chain
+const SCAN_WINDOW = 10_000; // gap-scan look-ahead per query (bounded, indexed)
+
+const fillStatus: FillStatus = {
+  running: false,
+  floor: config.INSPECT_FLOOR_BLOCK,
+  cursor: null,
+  head: null,
+  inspected: 0,
+  failed: 0,
+  caughtUp: false,
+  lastError: null,
+  startedAt: null,
+};
+
+export function getFillStatus(): FillStatus {
+  return { ...fillStatus };
+}
+
+/**
+ * Smallest un-inspected block in [from, to], or null if the whole range is
+ * covered. Scans in bounded windows so the anti-join never spans the full
+ * ~15M-block corpus (ADR-011 scale note).
+ */
+async function nextUncovered(from: number, to: number): Promise<number | null> {
+  for (let start = from; start <= to; start += SCAN_WINDOW) {
+    const end = Math.min(start + SCAN_WINDOW - 1, to);
+    const { rows } = await pool.query(
+      `SELECT s.n AS block
+       FROM generate_series($1::bigint, $2::bigint) s(n)
+       WHERE NOT EXISTS (SELECT 1 FROM blocks b WHERE b.block_number = s.n)
+       ORDER BY s.n LIMIT 1`,
+      [start, end],
+    );
+    if (rows.length > 0) return Number(rows[0].block);
+  }
+  return null;
+}
+
+let fillStarted = false;
+
+/** Start the continuous fixed-range fill worker (idempotent). */
+export function startFillWorker(): void {
+  if (fillStarted) return;
+  fillStarted = true;
+  fillStatus.running = true;
+  fillStatus.startedAt = new Date().toISOString();
+  console.log(`fixed-range fill worker started from #${fillStatus.floor}`);
+  void fillLoop();
+}
+
+async function fillLoop(): Promise<void> {
+  const provider = getProvider();
+  let cursor = fillStatus.floor;
+  while (true) {
+    let target: number;
+    try {
+      target = (await provider.getBlockNumber()) - CONFIRMATIONS;
+      fillStatus.head = target;
+    } catch (err) {
+      fillStatus.lastError = (err as Error).message;
+      await sleep(FILL_IDLE_MS);
+      continue;
+    }
+
+    const next = cursor <= target ? await nextUncovered(cursor, target) : null;
+    if (next == null) {
+      // caught up to the head — idle until the chain advances
+      fillStatus.caughtUp = true;
+      fillStatus.cursor = target + 1;
+      await sleep(FILL_IDLE_MS);
+      cursor = fillStatus.floor; // rescan from the floor to catch any late gaps
+      continue;
+    }
+
+    fillStatus.caughtUp = false;
+    cursor = next;
+    fillStatus.cursor = cursor;
+    try {
+      await backgroundInspect(cursor);
+      fillStatus.inspected++;
+    } catch (err) {
+      fillStatus.failed++;
+      fillStatus.lastError = (err as Error).message;
+      await sleep(FILL_ERROR_COOLDOWN_MS);
+    }
+    cursor++;
+    await sleep(FILL_PAUSE_MS);
+  }
 }
 
 /**
@@ -151,6 +271,93 @@ export async function getAnalyzedRanges(
     }
   }
   return ranges;
+}
+
+// WETH — the profit/received token we can safely denominate in ETH without a
+// price feed at aggregation time (ADR-011 §2 / X9 metric note).
+const WETH_ADDRESS = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+
+export interface MevValueBucket {
+  bucket: number; // block number of the bucket's left edge
+  arbitrageEth: number;
+  sandwichEth: number;
+  liquidationEth: number;
+  arbitrageCount: number;
+  sandwichCount: number;
+  liquidationCount: number;
+}
+
+/**
+ * Value extracted per MEV type over block buckets across [from, to] (X9). The
+ * value series is ETH-denominated and, without a price feed at aggregation
+ * time, sums only WETH-denominated profit (arbitrage/sandwich) and received
+ * collateral (liquidation) — a consistent lower bound. Per-type counts are
+ * returned alongside so the timeline can fall back to activity where ETH value
+ * is sparse. `bucketSize` defaults to ~200 buckets across the range.
+ */
+export async function getMevValueSeries(
+  from: number,
+  to: number,
+  bucketSize?: number,
+): Promise<{ bucketSize: number; buckets: MevValueBucket[] }> {
+  const size = bucketSize ?? Math.max(1, Math.ceil((to - from + 1) / 200));
+
+  // one grouped aggregate per type: WETH-denominated wei sum + row count,
+  // bucketed by block number (integer division onto the left edge).
+  const agg = (table: string, amountCol: string, tokenCol: string) =>
+    pool.query(
+      `SELECT (block_number / $3)::bigint * $3 AS bucket,
+              COUNT(*) AS n,
+              COALESCE(SUM(CASE WHEN lower(${tokenCol}) = $4
+                                THEN ${amountCol} ELSE 0 END), 0) AS wei
+       FROM ${table}
+       WHERE block_number BETWEEN $1 AND $2
+       GROUP BY bucket`,
+      [from, to, size, WETH_ADDRESS],
+    );
+
+  const [arbs, sandwiches, liquidations] = await Promise.all([
+    agg("arbitrages", "profit_amount", "profit_token_address"),
+    agg("sandwiches", "profit_amount", "profit_token_address"),
+    agg("liquidations", "received_amount", "received_token_address"),
+  ]);
+
+  const byBucket = new Map<number, MevValueBucket>();
+  const slot = (bucket: number): MevValueBucket => {
+    let b = byBucket.get(bucket);
+    if (!b) {
+      b = {
+        bucket,
+        arbitrageEth: 0,
+        sandwichEth: 0,
+        liquidationEth: 0,
+        arbitrageCount: 0,
+        sandwichCount: 0,
+        liquidationCount: 0,
+      };
+      byBucket.set(bucket, b);
+    }
+    return b;
+  };
+  const fold = (
+    rows: { bucket: unknown; n: unknown; wei: unknown }[],
+    ethKey: "arbitrageEth" | "sandwichEth" | "liquidationEth",
+    countKey: "arbitrageCount" | "sandwichCount" | "liquidationCount",
+  ) => {
+    for (const row of rows) {
+      const b = slot(Number(row.bucket));
+      b[ethKey] += Number(row.wei) / 1e18;
+      b[countKey] += Number(row.n);
+    }
+  };
+  fold(arbs.rows, "arbitrageEth", "arbitrageCount");
+  fold(sandwiches.rows, "sandwichEth", "sandwichCount");
+  fold(liquidations.rows, "liquidationEth", "liquidationCount");
+
+  return {
+    bucketSize: size,
+    buckets: [...byBucket.values()].sort((a, b) => a.bucket - b.bucket),
+  };
 }
 
 /**

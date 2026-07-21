@@ -2,12 +2,10 @@
 // packages/discovery/src/discovery/provider/LowLevelProvider.ts (ADR-004):
 // debug_traceTransaction with the callTracer and withLog, so the response is
 // the nested call tree including event logs.
-import { loadConfig } from "@mev/config";
+import { getProvider } from "@mev/rpc";
 import { type DebugTransactionCall, parseDebugTrace } from "@mev/trace-graph";
-import { ethers } from "ethers";
 
-const config = loadConfig();
-const provider = new ethers.JsonRpcProvider(config.RPC_URL);
+const provider = getProvider();
 
 // Big traces take a while, but a degraded node can also leave the call
 // hanging forever - fail instead so clients see an error, not a stalled tab.

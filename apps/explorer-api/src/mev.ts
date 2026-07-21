@@ -173,6 +173,12 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
       endAmountRaw: row.end_amount,
       protocols: row.protocols,
       error: row.error,
+      // Victim loss (X6): for an atomic arbitrage the realized profit equals
+      // the value removed from the mispriced pools — borne by their LPs and by
+      // the swap(s) that created the imbalance. Same token/amount as profit,
+      // carried as a distinct field so the UI can frame it as the cost side.
+      victimLossAmountRaw: row.profit_amount,
+      victimLossTokenAddress: row.profit_token_address,
     });
   }
 
@@ -384,6 +390,12 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
           m.payment = await formatAmount(
             m.paymentAmountRaw as string | null,
             m.paymentTokenAddress as string | null,
+          );
+        }
+        if (m.victimLossAmountRaw !== undefined) {
+          m.victimLoss = await formatAmount(
+            m.victimLossAmountRaw as string | null,
+            m.victimLossTokenAddress as string | null,
           );
         }
       }

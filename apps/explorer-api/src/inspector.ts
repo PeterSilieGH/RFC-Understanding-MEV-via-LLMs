@@ -1,7 +1,7 @@
 import { loadConfig } from "@mev/config";
 import { pool } from "@mev/db";
 import { inspectBlock } from "@mev/inspect";
-import { ethers } from "ethers";
+import { getProvider } from "@mev/rpc";
 
 // Block inspection is now in-process (ADR-010): the native @mev/inspect engine
 // fetches the block's traces over RPC, decodes/classifies/pattern-matches, and
@@ -10,7 +10,7 @@ import { ethers } from "ethers";
 // workaround is gone with the Python step that caused it (audit B6): a failure
 // here is a real failure.
 const config = loadConfig();
-const provider = new ethers.JsonRpcProvider(config.RPC_URL);
+const provider = getProvider();
 
 const inFlight = new Map<number, Promise<unknown>>();
 
@@ -55,4 +55,18 @@ export async function inspectBlockIfNeeded(
 
   await promise;
   return { alreadyInspected: false };
+}
+
+// Background inspections — the fixed-range fill worker (X10), the head-follower,
+// and the manual backfill queue — share ONE serial queue process-wide (ADR-011
+// §1) so they never both hit the connection-capped node at once. Interactive
+// block views keep calling inspectBlockIfNeeded directly and may overlap; they
+// must never wait behind a long background fill.
+let backgroundTail: Promise<unknown> = Promise.resolve();
+
+export function backgroundInspect(blockNumber: number): Promise<{ alreadyInspected: boolean }> {
+  const run = backgroundTail.then(() => inspectBlockIfNeeded(blockNumber));
+  // keep the chain alive regardless of an individual block's failure
+  backgroundTail = run.catch(() => {});
+  return run;
 }

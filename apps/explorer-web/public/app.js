@@ -1,7 +1,9 @@
 const themeToggle = document.getElementById("themeToggle");
 const prevBtn = document.getElementById("prevBtn");
 const nextBtn = document.getElementById("nextBtn");
-const currentBlockEl = document.getElementById("currentBlock");
+const modeToggle = document.getElementById("modeToggle");
+const searchInput = document.getElementById("searchInput");
+const searchGoBtn = document.getElementById("searchGoBtn");
 const liveToggleBtn = document.getElementById("liveToggleBtn");
 const onlyMevToggle = document.getElementById("onlyMevToggle");
 const eurToggle = document.getElementById("eurToggle");
@@ -18,12 +20,11 @@ const incomeChartEl = document.getElementById("incomeChart");
 const incomeLegendEl = document.getElementById("incomeLegend");
 const timelineEl = document.getElementById("timeline");
 const timelineTrackEl = document.getElementById("timelineTrack");
-const timelineCoverageEl = document.getElementById("timelineCoverage");
+const timelineGraphEl = document.getElementById("timelineGraph");
 const timelineIntervalEl = document.getElementById("timelineInterval");
-const timelineHandleEl = document.getElementById("timelineHandle");
+const timelineLegendEl = document.getElementById("timelineLegend");
 const timelineStartEl = document.getElementById("timelineStart");
 const timelineEndEl = document.getElementById("timelineEnd");
-const timelineStatusEl = document.getElementById("timelineStatus");
 const addressInput = document.getElementById("addressInput");
 const addressSearchBtn = document.getElementById("addressSearchBtn");
 const addressResultsEl = document.getElementById("addressResults");
@@ -181,13 +182,16 @@ let state = {
   showEur: false,
   eurPrices: {},
   history: [], // [{blockNumber, builder, txCount, mevCount, privateCount, trackedCount}]
-  // block timeline (E7)
-  timelineHead: null, // newest block the timeline window ends at
-  analysisBlock: null, // analysis-slider position (backfill start)
+  // value timeline (X9)
+  timelineHead: null, // newest block the timeline window ends at (head)
   intervalEnd: null, // right edge of the 100-block interval slider
-  coverage: [], // analyzed ranges within the window [{start, end}]
+  coverage: [], // analyzed ranges within the current interval [{start, end}]
   intervalActivity: new Map(), // blockNumber -> total MEV count (interval)
   tickerMode: "history", // "history" (follow-latest) | "interval"
+  valueSeries: [], // per-bucket extracted value [{bucket, arbitrageEth, …}]
+  valueBucketSize: 1, // blocks per value-series bucket
+  valueMax: 0, // max ETH across all series (graph scale)
+  mode: "block", // "block" | "address" — header search mode (X8)
 };
 
 const WETH_ADDRESS = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
@@ -232,6 +236,13 @@ function fmtAmount(amount) {
     if (price != null) return `${fmtNumber(amount.value * price)} €`;
   }
   return `${fmtNumber(amount.value)} ${amount.symbol}`;
+}
+
+// X4: the unit label shown for native-currency figures. In Ethereum (ETH)
+// mode we display "xhi"; the EUR toggle overrides it. Value math is unchanged —
+// this is purely the label.
+function ethUnit() {
+  return state.showEur ? "EUR" : "xhi";
 }
 
 // For plain ETH amounts that don't go through fmtAmount (gas/tip/fee
@@ -339,20 +350,26 @@ function renderTicker() {
   tickerEl.scrollLeft = tickerEl.scrollWidth;
 }
 
-// ---- Block timeline (E7): analysis slider + 100-block interval slider -----
-// The track spans the newest TIMELINE_SPAN blocks up to the chain head.
-// Dragging the analysis handle left starts a background backfill from that
-// height (E6); the track fills green rightward as Postgres reports coverage.
-// The interval slider scopes the ticker strip to 100 blocks; on change the
-// interval's highest-MEV block is focused.
+// ---- Value timeline (X9, ADR-011 §2) --------------------------------------
+// A value-over-time line graph spanning [INSPECT_FLOOR_BLOCK … head]: three
+// color-coded series (arbitrage / sandwich / liquidation) plot the ETH value
+// extracted per block bucket. The analysis slider + backfill button are gone
+// (coverage is driven by the continuous fixed-range worker, X10); only the
+// 100-block interval slider remains, scoping the ticker strip and focusing the
+// interval's highest-value block.
 
-const TIMELINE_SPAN = 5000;
+const INSPECT_FLOOR_BLOCK = 11_000_000;
 const INTERVAL_SIZE = 100;
-const BACKFILL_POLL_MS = 3000;
+const VALUE_POLL_MS = 30_000;
+
+const VALUE_SERIES = [
+  { key: "arbitrage", label: "Arbitrage", color: "var(--blue, #7aa3c4)" },
+  { key: "sandwich", label: "Sandwich", color: "var(--red, #c47a7a)" },
+  { key: "liquidation", label: "Liquidation", color: "var(--green, #7fae7f)" },
+];
 
 function timelineWindow() {
-  const end = state.timelineHead;
-  return { start: Math.max(0, end - TIMELINE_SPAN + 1), end };
+  return { start: INSPECT_FLOOR_BLOCK, end: state.timelineHead };
 }
 
 function blockToFrac(block) {
@@ -365,6 +382,51 @@ function fracToBlock(frac) {
   return Math.round(start + Math.min(1, Math.max(0, frac)) * (end - start));
 }
 
+// Fetch the whole-corpus value series once per head advance (buckets are cheap
+// server-side aggregates; the series is mostly zero until coverage fills in).
+async function refreshValueSeries() {
+  if (state.timelineHead == null) return;
+  const { start, end } = timelineWindow();
+  try {
+    const res = await fetch(`/api/mev-value?from=${start}&to=${end}`);
+    const data = await res.json();
+    state.valueSeries = data.buckets || [];
+    state.valueBucketSize = data.bucketSize || 1;
+    state.valueMax = state.valueSeries.reduce(
+      (m, b) => Math.max(m, b.arbitrageEth, b.sandwichEth, b.liquidationEth),
+      0,
+    );
+    renderTimeline();
+  } catch {
+    /* the graph is cosmetic — never break the page over it */
+  }
+}
+
+const GRAPH_W = 1000;
+const GRAPH_H = 120;
+
+function drawValueGraph() {
+  const buckets = state.valueSeries;
+  const max = state.valueMax || 0;
+  const half = (state.valueBucketSize || 1) / 2;
+  const yFor = (v) => (max > 0 ? GRAPH_H - 4 - (v / max) * (GRAPH_H - 12) : GRAPH_H - 4);
+
+  const polylines = VALUE_SERIES.map((s) => {
+    if (buckets.length === 0) return "";
+    const pts = buckets
+      .map((b) => `${(blockToFrac(b.bucket + half) * GRAPH_W).toFixed(1)},${yFor(b[`${s.key}Eth`]).toFixed(1)}`)
+      .join(" ");
+    return `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="1.6" vector-effect="non-scaling-stroke" />`;
+  }).join("");
+
+  timelineGraphEl.innerHTML = `<line x1="0" y1="${GRAPH_H - 4}" x2="${GRAPH_W}" y2="${GRAPH_H - 4}" stroke="var(--border)" stroke-width="1" vector-effect="non-scaling-stroke"/>${polylines}`;
+
+  timelineLegendEl.innerHTML = VALUE_SERIES.map(
+    (s) =>
+      `<span class="tl-legend-item"><span class="legend-swatch" style="background:${s.color}"></span>${s.label}</span>`,
+  ).join("") + `<span class="tl-legend-unit">value extracted (${ethUnit()})${max > 0 ? ` · peak ${fmtEth(max, 2)}` : ""}</span>`;
+}
+
 function renderTimeline() {
   if (state.timelineHead == null) return;
   timelineEl.classList.remove("hidden");
@@ -372,75 +434,23 @@ function renderTimeline() {
   timelineStartEl.textContent = `#${start}`;
   timelineEndEl.textContent = `#${end} (head)`;
 
-  timelineHandleEl.style.left = `${blockToFrac(state.analysisBlock) * 100}%`;
   const intervalStartFrac = blockToFrac(state.intervalEnd - INTERVAL_SIZE + 1);
   const intervalEndFrac = blockToFrac(state.intervalEnd);
   timelineIntervalEl.style.left = `${intervalStartFrac * 100}%`;
   timelineIntervalEl.style.width = `${Math.max(0.5, (intervalEndFrac - intervalStartFrac) * 100)}%`;
 
-  timelineCoverageEl.innerHTML = state.coverage
-    .filter((r) => r.end >= start && r.start <= end)
-    .map((r) => {
-      const a = blockToFrac(Math.max(r.start, start));
-      const b = blockToFrac(Math.min(r.end, end));
-      return `<div class="cov" style="left:${a * 100}%;width:${Math.max(0.15, (b - a) * 100)}%"></div>`;
-    })
-    .join("");
+  drawValueGraph();
 }
 
-async function refreshCoverage() {
-  if (state.timelineHead == null) return;
-  const { start, end } = timelineWindow();
+// Coverage for the current 100-block interval only (not the 15M-block corpus),
+// so the ticker can mark analyzed blocks.
+async function refreshIntervalCoverage(from, to) {
   try {
-    const res = await fetch(`/api/analyzed-ranges?from=${start}&to=${end}`);
+    const res = await fetch(`/api/analyzed-ranges?from=${from}&to=${to}`);
     const data = await res.json();
     state.coverage = data.ranges || [];
-    renderTimeline();
-    if (state.tickerMode === "interval") renderIntervalTicker();
   } catch {
-    /* coverage is cosmetic - never break the page over it */
-  }
-}
-
-let backfillPollTimer = null;
-function pollBackfill() {
-  if (backfillPollTimer) return;
-  backfillPollTimer = setInterval(async () => {
-    try {
-      const res = await fetch("/api/backfill");
-      const status = await res.json();
-      if (status.running) {
-        timelineStatusEl.className = "timeline-status active";
-        timelineStatusEl.textContent = `backfilling… #${status.cursor} of #${status.targetBlock} (${status.inspected} inspected, ${status.skipped} cached${status.failed ? `, ${status.failed} failed` : ""})`;
-        await refreshCoverage();
-      } else {
-        clearInterval(backfillPollTimer);
-        backfillPollTimer = null;
-        timelineStatusEl.className = "timeline-status";
-        timelineStatusEl.textContent = status.startedAt
-          ? `backfill done (${status.inspected} inspected, ${status.skipped} cached${status.failed ? `, ${status.failed} failed` : ""})`
-          : "";
-        await refreshCoverage();
-      }
-    } catch {
-      /* keep polling */
-    }
-  }, BACKFILL_POLL_MS);
-}
-
-async function startBackfillFrom(block) {
-  try {
-    const res = await fetch("/api/backfill", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fromBlock: block }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "backfill failed to start");
-    showToast(`Backfilling analysis from block ${block} to the head.`, "success");
-    pollBackfill();
-  } catch (err) {
-    showToast(`Error: ${err.message}`, "error");
+    state.coverage = [];
   }
 }
 
@@ -448,26 +458,6 @@ function trackFrac(clientX) {
   const rect = timelineTrackEl.getBoundingClientRect();
   return (clientX - rect.left) / rect.width;
 }
-
-// analysis slider: drag, then backfill from the released position
-timelineHandleEl.addEventListener("pointerdown", (e) => {
-  e.preventDefault();
-  timelineHandleEl.setPointerCapture(e.pointerId);
-  const move = (ev) => {
-    state.analysisBlock = fracToBlock(trackFrac(ev.clientX));
-    renderTimeline();
-  };
-  const up = () => {
-    timelineHandleEl.removeEventListener("pointermove", move);
-    timelineHandleEl.removeEventListener("pointerup", up);
-    if (state.analysisBlock < state.timelineHead) {
-      setLive(false);
-      startBackfillFrom(state.analysisBlock);
-    }
-  };
-  timelineHandleEl.addEventListener("pointermove", move);
-  timelineHandleEl.addEventListener("pointerup", up);
-});
 
 // interval slider: drag the 100-block window, then focus its hottest block
 timelineIntervalEl.addEventListener("pointerdown", (e) => {
@@ -502,7 +492,7 @@ async function applyInterval() {
   } catch {
     state.intervalActivity = new Map();
   }
-  await refreshCoverage();
+  await refreshIntervalCoverage(from, to);
   renderIntervalTicker();
 
   // focus the interval's highest-MEV block; ties -> newest; none -> newest
@@ -794,7 +784,7 @@ function renderIncomeChart(transactions, bid) {
   document.getElementById("total-income").textContent = fmtEth(b.income);
   document.getElementById("total-bid").textContent = b.bidEth != null ? fmtEth(b.bidEth) : "n/a";
 
-  const money = state.showEur ? "EUR" : "ETH";
+  const money = ethUnit();
   const segmentRows = INCOME_SEGMENTS.filter((segment) => b[segment.key] > 0)
     .map(
       (segment) => `
@@ -840,6 +830,16 @@ function renderMevDetail(m) {
     case "arbitrage":
       rows.push(kv("Account", addrLink(m.accountAddress)));
       if (m.profit) rows.push(kv("Profit", profitSpan(m.profit)));
+      // X6: the value the arbitrage removed from the mispriced pools — borne by
+      // their LPs and the swap(s) that created the imbalance. For an atomic
+      // arbitrage this equals the realized profit.
+      if (m.victimLoss)
+        rows.push(
+          kv(
+            '<span title="Value extracted from the mispriced pools / LPs (equals the arbitrageur\'s profit for an atomic arbitrage)">Cost to pools (victim loss)</span>',
+            `<span class="loss">${fmtAmount(m.victimLoss)}</span>`,
+          ),
+        );
       if (m.protocols?.length) rows.push(kv("Protocols", m.protocols.join(", ")));
       if (m.error) rows.push(kv("Note", `reverted (${m.error})`));
       break;
@@ -1112,7 +1112,7 @@ function renderTable() {
           <th>To</th>
           <th>Gas Used</th>
           <th>Gas Price (gwei)</th>
-          <th>Builder Tip (${state.showEur ? "EUR" : "ETH"})</th>
+          <th>Builder Tip (${ethUnit()})</th>
           <th>Mempool</th>
           <th>Detected MEV</th>
         </tr>
@@ -1155,7 +1155,18 @@ async function loadBlock(blockNumber, { silent = false } = {}) {
     state.builder = data.builder;
     state.bid = data.bid;
     state.expanded.clear();
-    currentBlockEl.textContent = `#${data.blockNumber}`;
+    // X5: the standalone #block-number caption is gone; reflect the loaded
+    // block in the header search box when it's in block mode (X8) and unfocused.
+    if (state.mode === "block" && document.activeElement !== searchInput) {
+      searchInput.value = String(data.blockNumber);
+    }
+    // X1: remember the last viewed block so a reload restores it (instead of
+    // jumping to the head) unless follow-latest is on.
+    try {
+      localStorage.setItem("lastBlock", String(data.blockNumber));
+    } catch {
+      /* private mode / storage disabled — non-fatal */
+    }
 
     pushHistory(data.blockNumber, data.transactions, data.builder, data.bid);
 
@@ -1194,16 +1205,15 @@ async function pollRpcStatus() {
     rpcDot.className = "dot online";
     rpcText.textContent = `mainnet · head #${latest}`;
 
-    // timeline window ends at the head; in follow-latest mode both sliders
-    // stay pinned right (current behavior preserved, E7)
+    // timeline window ends at the head; the interval slider pins right in
+    // follow-latest mode (X9 — the analysis slider is gone)
     const firstHead = state.timelineHead == null;
     state.timelineHead = latest;
     if (firstHead || state.live) {
-      state.analysisBlock = latest;
       state.intervalEnd = latest;
     }
     renderTimeline();
-    if (firstHead) refreshCoverage();
+    if (firstHead) refreshValueSeries();
 
     if (state.live && latest !== state.blockNumber) {
       loadBlock(latest, { silent: true });
@@ -1221,16 +1231,69 @@ nextBtn.addEventListener("click", () => {
   if (state.blockNumber != null) loadBlock(state.blockNumber + 1);
 });
 
+// X8: unified header search with a Block/Address mode toggle. In block mode the
+// box loads a block above (replacing the removed #block-number field, X5); in
+// address mode it runs the same lookup as the Address-lookup tab and reveals
+// it, so one search box drives both. The dedicated tab input still works too.
+function updateSearchMode() {
+  const isAddress = state.mode === "address";
+  modeToggle.textContent = isAddress ? "Address" : "Block";
+  modeToggle.dataset.mode = state.mode;
+  searchInput.placeholder = isAddress ? "0x… address" : "Block number…";
+  searchInput.value =
+    !isAddress && state.blockNumber != null ? String(state.blockNumber) : "";
+}
+
+function runHeaderSearch() {
+  const query = searchInput.value.trim();
+  if (!query) return;
+  if (state.mode === "block") {
+    const block = Number(query);
+    if (!Number.isInteger(block) || block < 0) {
+      showToast("Enter a valid block number.", "error");
+      return;
+    }
+    setLive(false);
+    loadBlock(block);
+  } else {
+    if (!/^0x[a-fA-F0-9]{40}$/.test(query)) {
+      showToast("Enter a valid 0x… address.", "error");
+      return;
+    }
+    // route through the Address-lookup tab so the result renders in one place
+    addressInput.value = query;
+    activateTab("address");
+    addressResultsEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    searchAddress();
+  }
+}
+
+modeToggle.addEventListener("click", () => {
+  state.mode = state.mode === "block" ? "address" : "block";
+  updateSearchMode();
+  searchInput.focus();
+});
+searchGoBtn.addEventListener("click", runHeaderSearch);
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") runHeaderSearch();
+});
+
 // follow-latest is an icon box-toggle in the top bar (same pattern as the
-// MEV-only/EUR/theme toggles); re-enabling pins both timeline sliders right
-// and restores the recently-viewed ticker (E7)
+// MEV-only/EUR/theme toggles); re-enabling pins the interval slider right and
+// restores the recently-viewed ticker (E7/X9)
 function setLive(on) {
   state.live = on;
   liveToggleBtn.classList.toggle("active", on);
+  // X1: persist follow-latest so a reload restores where you were — head if you
+  // were following, otherwise the last block you viewed.
+  try {
+    localStorage.setItem("live", on ? "1" : "0");
+  } catch {
+    /* private mode / storage disabled — non-fatal */
+  }
   if (on) {
     state.tickerMode = "history";
     if (state.timelineHead != null) {
-      state.analysisBlock = state.timelineHead;
       state.intervalEnd = state.timelineHead;
     }
     renderTimeline();
@@ -1666,26 +1729,30 @@ function renderMempoolBlock() {
 }
 
 const loadedTabs = new Set();
-document.querySelectorAll(".explore-tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".explore-tab").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll(".explore-panel").forEach((p) => p.classList.add("hidden"));
-    tab.classList.add("active");
-    document.getElementById(`panel-${tab.dataset.tab}`).classList.remove("hidden");
+// Extracted so the header search (X8, address mode) can reveal a tab too.
+function activateTab(name) {
+  document
+    .querySelectorAll(".explore-tab")
+    .forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  document
+    .querySelectorAll(".explore-panel")
+    .forEach((p) => p.classList.toggle("hidden", p.id !== `panel-${name}`));
 
-    // the mempool tab reflects the currently loaded block, so re-render on
-    // every visit; the multi-block tabs load once per session
-    if (tab.dataset.tab === "mempool") {
-      renderMempoolBlock();
-      return;
-    }
-    if (!loadedTabs.has(tab.dataset.tab)) {
-      loadedTabs.add(tab.dataset.tab);
-      if (tab.dataset.tab === "leaderboard") loadLeaderboard();
-      if (tab.dataset.tab === "heatmap") loadHeatmap();
-      if (tab.dataset.tab === "builders") loadBuilderStats();
-    }
-  });
+  // the mempool tab reflects the currently loaded block, so re-render on
+  // every visit; the multi-block tabs load once per session
+  if (name === "mempool") {
+    renderMempoolBlock();
+    return;
+  }
+  if (!loadedTabs.has(name)) {
+    loadedTabs.add(name);
+    if (name === "leaderboard") loadLeaderboard();
+    if (name === "heatmap") loadHeatmap();
+    if (name === "builders") loadBuilderStats();
+  }
+}
+document.querySelectorAll(".explore-tab").forEach((tab) => {
+  tab.addEventListener("click", () => activateTab(tab.dataset.tab));
 });
 
 addressSearchBtn.addEventListener("click", searchAddress);
@@ -1712,17 +1779,12 @@ themeToggle.addEventListener("click", () => {
 applyTheme(document.documentElement.dataset.theme === "light" ? "light" : "dark");
 
 buildLegend();
+updateSearchMode();
 pollRpcStatus();
 liveTimer = setInterval(pollRpcStatus, 12000);
 
-// resume progress display if a backfill is already running (E6 queue state
-// lives in the API; coverage lives in Postgres - both survive reloads)
-fetch("/api/backfill")
-  .then((res) => res.json())
-  .then((status) => {
-    if (status.running) pollBackfill();
-  })
-  .catch(() => {});
+// Coverage now fills continuously server-side (X10, ADR-011 §1) — there is no
+// per-session backfill queue to resume, so the old /api/backfill poll is gone.
 
 // ?block=N deep links (e.g. from the trace view's "inspect this block" hint);
 // with the number input gone this is also the precise-navigation fallback,
@@ -1732,7 +1794,16 @@ if (Number.isInteger(initialBlockParam) && initialBlockParam > 0) {
   setLive(false);
   loadBlock(initialBlockParam);
 } else {
-  fetchLatestBlockNumber()
-    .then((latest) => loadBlock(latest))
-    .catch(() => showToast("Could not reach the RPC node.", "error"));
+  // X1: if you weren't following the head last time, restore the block you were
+  // on instead of jumping to the head. Following-latest (the default) wins.
+  const savedLive = localStorage.getItem("live");
+  const lastBlock = Number(localStorage.getItem("lastBlock"));
+  if (savedLive === "0" && Number.isInteger(lastBlock) && lastBlock > 0) {
+    setLive(false);
+    loadBlock(lastBlock);
+  } else {
+    fetchLatestBlockNumber()
+      .then((latest) => loadBlock(latest))
+      .catch(() => showToast("Could not reach the RPC node.", "error"));
+  }
 }

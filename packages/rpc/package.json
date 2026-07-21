@@ -1,0 +1,20 @@
+{
+  "name": "@mev/rpc",
+  "version": "1.0.0",
+  "description": "One shared JsonRpcProvider per process against the capped RPC node (ADR-011 §3).",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@mev/config": "workspace:*",
+    "ethers": "^6.13.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3"
+  }
+}

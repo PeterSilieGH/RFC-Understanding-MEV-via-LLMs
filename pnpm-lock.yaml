@@ -176,6 +176,9 @@ importers:
       '@mev/inspect':
         specifier: workspace:*
         version: link:../../packages/inspect
+      '@mev/rpc':
+        specifier: workspace:*
+        version: link:../../packages/rpc
       ethers:
         specifier: ^6.13.4
         version: 6.16.0
@@ -207,6 +210,9 @@ importers:
       '@mev/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@mev/rpc':
+        specifier: workspace:*
+        version: link:../../packages/rpc
       '@mev/trace-graph':
         specifier: workspace:*
         version: link:../../packages/trace-graph
@@ -360,6 +366,22 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)(lightningcss@1.32.0)
+
+  packages/rpc:
+    dependencies:
+      '@mev/config':
+        specifier: workspace:*
+        version: link:../config
+      ethers:
+        specifier: ^6.13.4
+        version: 6.16.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.19.21
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
 
   packages/trace-graph:
     dependencies:

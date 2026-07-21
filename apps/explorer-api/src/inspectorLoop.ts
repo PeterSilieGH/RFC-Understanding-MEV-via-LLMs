@@ -1,13 +1,11 @@
-import { loadConfig } from "@mev/config";
-import { ethers } from "ethers";
-import { inspectBlockIfNeeded } from "./inspector.js";
+import { getProvider } from "@mev/rpc";
+import { backgroundInspect } from "./inspector.js";
 
 // Optional head-follower (ADR-010): once started, continuously inspects new
 // blocks as the chain advances, so the explorer stays current without a manual
 // backfill. The on-demand `/api/block/:n` path and the backfill queue remain the
 // primary drivers; this just keeps the head warm. Gated by INSPECTOR_FOLLOW_HEAD.
-const config = loadConfig();
-const provider = new ethers.JsonRpcProvider(config.RPC_URL);
+const provider = getProvider();
 
 const POLL_MS = 12_000; // ~one block time
 const CONFIRMATIONS = 2; // stay a couple blocks behind head for reorg safety
@@ -30,7 +28,7 @@ async function tick(): Promise<void> {
     const from = lastInspected === 0 ? target : Math.max(lastInspected + 1, target - MAX_CATCHUP);
     for (let n = from; n <= target; n++) {
       try {
-        await inspectBlockIfNeeded(n);
+        await backgroundInspect(n);
       } catch (err) {
         console.error(`head-follow inspect ${n} failed:`, (err as Error).message);
       }

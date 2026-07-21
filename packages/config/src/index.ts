@@ -38,6 +38,22 @@ const configSchema = z.object({
     .default("false")
     .transform((v) => v === "true" || v === "1"),
 
+  // Exhaustive-coverage floor (ADR-011 §1): the canonical corpus is
+  // [INSPECT_FLOOR_BLOCK … head]. Ethereum block 11,000,000 (~Oct 2020) is the
+  // first block from which the ported detectors and DEX/token registries are
+  // meaningful.
+  INSPECT_FLOOR_BLOCK: z.coerce.number().int().default(11_000_000),
+
+  // When true, explorer-api runs the continuous fixed-range inspection worker
+  // (ADR-011 §1, X10): a service-lifecycle backfill that keeps
+  // [INSPECT_FLOOR_BLOCK … head] filled. Off by default so a fresh checkout
+  // doesn't start a multi-week fill unasked. Same string-parse caveat as
+  // INSPECTOR_FOLLOW_HEAD.
+  INSPECTOR_FILL_RANGE: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+
   ANTHROPIC_API_KEY: z.string().optional(),
   ETHERSCAN_API_KEY: z.string().optional(),
   COINGECKO_API_KEY: z.string().optional(),

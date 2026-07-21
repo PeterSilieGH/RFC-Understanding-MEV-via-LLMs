@@ -75,16 +75,19 @@ docker compose up -d
 # Disco API: http://localhost:2021  (DISCO_API_PORT; l2b ui from the submodule, API only)
 ```
 
-Requesting a block in the explorer triggers on-demand inspection: `explorer-api` runs the
-`mev-inspect-py:local` image once for that block, which writes classified traces, swaps,
-arbitrages, sandwiches, and liquidations to the shared Postgres. For bulk coverage the
-explorer's timeline has an analysis slider: dragging it left starts a background backfill
-(`POST /api/backfill`) that walks from that height to the chain head, strictly one block
-at a time through the same inspection dedupe (never preempting interactive views).
-Coverage paints green on the timeline as inspection progresses and survives restarts —
-it is derived from Postgres (`GET /api/analyzed-ranges`), not client state. A second
-slider selects a 100-block interval for the block strip, auto-focusing the interval's
-highest-MEV block (`GET /api/mev-activity`).
+Requesting a block in the explorer triggers on-demand inspection: `explorer-api` calls the
+native `@mev/inspect` engine in-process (ADR-010 — no per-block container) for that block,
+which writes classified traces, swaps, arbitrages, sandwiches, and liquidations to the
+shared Postgres. For bulk coverage a continuous fill worker (ADR-011) walks the chain
+exhaustively from a fixed floor (`INSPECT_FLOOR_BLOCK`, default 11,000,000) up to the head,
+one block at a time through a single process-wide serial queue it shares with the
+head-follower — background inspection never doubles up on the connection-capped node, and
+interactive views never wait behind it. Coverage survives restarts, being derived from
+Postgres (`GET /api/analyzed-ranges`), not client state. The explorer's timeline is a
+value-over-time line graph from the floor to the head — three series (arbitrage / sandwich
+/ liquidation ETH extracted, `GET /api/mev-value`) — with a 100-block interval slider that
+selects the block strip and auto-focuses the interval's highest-MEV block
+(`GET /api/mev-activity`). `POST /api/backfill` is retained as an ops-only manual walk.
 
 ## Development
 

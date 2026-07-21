@@ -1,9 +1,8 @@
-import { loadConfig } from "@mev/config";
 import { ensureAppTables, pool } from "@mev/db";
+import { getProvider } from "@mev/rpc";
 import { ethers } from "ethers";
 
-const config = loadConfig();
-const provider = new ethers.JsonRpcProvider(config.RPC_URL);
+const provider = getProvider();
 
 export interface BlockBuilder {
   builder: string | null;

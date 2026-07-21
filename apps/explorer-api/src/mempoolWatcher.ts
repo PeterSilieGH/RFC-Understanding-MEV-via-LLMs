@@ -1,7 +1,4 @@
-import { loadConfig } from "@mev/config";
-import { ethers } from "ethers";
-
-const config = loadConfig();
+import { getProvider } from "@mev/rpc";
 
 // eth_getFilterChanges is a cheap diff (just new hashes), so we can poll it
 // tightly for good time resolution without much RPC/CPU cost. We deliberately
@@ -11,7 +8,7 @@ const config = loadConfig();
 const FILTER_POLL_INTERVAL_MS = 100;
 const RETENTION_MS = 2 * 60 * 1000; // discard sightings older than 2 minutes
 
-const provider = new ethers.JsonRpcProvider(config.RPC_URL);
+const provider = getProvider();
 
 export type MempoolStatus = "public" | "private" | "caching" | "unknown";
 

@@ -6,6 +6,8 @@ WORKDIR /repo
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY packages/config ./packages/config
 COPY packages/db ./packages/db
+# @mev/rpc: the one shared JsonRpcProvider per process (ADR-011 §3).
+COPY packages/rpc ./packages/rpc
 # @mev/inspect: the native TypeScript inspector (ADR-010). Its abis/ directory
 # ships as source alongside dist/ (abi.ts resolves it relative to the package).
 COPY packages/inspect ./packages/inspect

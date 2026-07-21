@@ -1,12 +1,15 @@
 import { loadConfig } from "@mev/config";
 import { migrate, pool } from "@mev/db";
-import { ethers } from "ethers";
+import { getProvider } from "@mev/rpc";
 import express from "express";
 import {
   getAnalyzedRanges,
   getBackfillStatus,
+  getFillStatus,
   getMevActivity,
+  getMevValueSeries,
   startBackfill,
+  startFillWorker,
   stopBackfill,
 } from "./backfill.js";
 import { getBlockBuilder, getBuilderStats } from "./builder.js";
@@ -20,7 +23,7 @@ import { getBlockMev } from "./mev.js";
 import { getBuilderBid, getRelayStats } from "./relay.js";
 
 const config = loadConfig();
-const provider = new ethers.JsonRpcProvider(config.RPC_URL);
+const provider = getProvider();
 const app = express();
 app.use(express.json());
 
@@ -84,6 +87,32 @@ app.get("/api/mev-activity", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+// Value extracted per MEV type over block buckets (X9, ADR-011 §2): drives the
+// timeline's 3-series (arbitrage / sandwich / liquidation) value-over-time graph.
+app.get("/api/mev-value", async (req, res) => {
+  const from = Number(req.query.from);
+  const to = Number(req.query.to);
+  const bucket = req.query.bucket === undefined ? undefined : Number(req.query.bucket);
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) {
+    res.status(400).json({ error: "invalid from/to" });
+    return;
+  }
+  if (bucket !== undefined && (!Number.isInteger(bucket) || bucket <= 0)) {
+    res.status(400).json({ error: "invalid bucket" });
+    return;
+  }
+  try {
+    res.json({ from, to, ...(await getMevValueSeries(from, to, bucket)) });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Continuous fixed-range fill worker status (X10).
+app.get("/api/fill", (_req, res) => {
+  res.json(getFillStatus());
 });
 
 app.get("/api/latest", async (_req, res) => {
@@ -256,4 +285,7 @@ migrate()
     });
     // Optionally keep the chain head continuously inspected (ADR-010).
     if (config.INSPECTOR_FOLLOW_HEAD) startInspectorLoop();
+    // Optionally run the continuous fixed-range fill worker (ADR-011 §1, X10):
+    // keeps [INSPECT_FLOOR_BLOCK … head] filled as the coverage corpus.
+    if (config.INSPECTOR_FILL_RANGE) startFillWorker();
   });
