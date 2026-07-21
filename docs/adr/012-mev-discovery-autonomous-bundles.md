@@ -9,6 +9,11 @@ PROMPT promoted to an in-scope **value-pane enrichment** (§6, reversing the
 original "not an agent-api concern" note), and **content-addressed `.flat`
 deduplication** (§7, prototyped as `@mev/flat-store`).
 
+**Operational amendment — 2026-07-21:** both research modes now default off,
+the stable panel label is always **Discovery**, bundle-generation failures are
+contract-scoped retryable warnings, and analysis scheduling supports bounded
+independent concurrency while preserving per-session ordering (§1, §5).
+
 ## Context
 
 ADR-009 gave the trace workspace an **Analyze panel** and an **Incident panel**
@@ -71,7 +76,11 @@ an **unknown contract that lacks them**.
 - Statelessness/restart-safety is preserved by **persisting session state to
   Postgres** (app-owned, ADR-002) and rehydrating on demand — the in-memory pi
   session is a cache over durable state, not the source of truth. Runs are
-  still serialized process-wide (ADR-009 load rule unchanged).
+  bounded process-wide. Independent ephemeral runs may overlap when
+  `AGENT_MAX_CONCURRENCY` is greater than one, while turns sharing a persistent
+  session key remain serialized. The default is two: a live two-run benchmark
+  reduced wall time from 37.6s to 20.8s without rate limiting or provider 5xx
+  responses; higher limits remain opt-in.
 - **Supersedes ADR-009's** "one session per request" and the
   re-send-each-turn behavior of `verdict-chat`. Compact-transcript and
   `agent_runs` persistence remain, complemented by session persistence.
@@ -134,13 +143,15 @@ an **unknown contract that lacks them**.
 ### 5. Research modes and the Vulnerability Discovery pane
 
 - On DiscoUI startup, a selector offers **[MEV Research]** and **[Vulnerability
-  Research]**; **MEV is selected by default**. The choice is persisted and
+  Research]**; **both are deselected by default**. The choice is persisted and
   determines which Discovery panes are shown and **which bundle kinds analyze
   produces**.
 - **Vulnerability Discovery** is a pane that mirrors MEV Discovery (persistent
   session, selectable bundles, live meter, verdict + chat) but with a **distinct
   system prompt** and consuming **`vuln` bundles**. The two panes are the same
   machinery parameterized by `kind`.
+- The docking panel label is always **Discovery**, regardless of which research
+  modes are active. Kind-specific headings remain inside the panel.
 - With both modes active, autonomous analysis produces both bundle kinds in one
   run per unknown contract (§2 joint creation); each pane consumes only its own
   kind.
@@ -188,6 +199,14 @@ an **unknown contract that lacks them**.
   the first encounter. Correctness depends on the codehash key granularity —
   proxies/minimal-proxies may need the implementation codehash, not the proxy's
   (a WP trap).
+- **Latency is multiplicative.** Initial preparation is one provider turn per
+  unknown codehash, each turn may perform several `get_function_code` tool
+  calls, and the pi harness may retry a transient provider failure twice. A
+  large incident, slow model, provider rate limiting/5xx responses, bounded
+  concurrency, RPC codehash lookups, and oversized verified sources can
+  therefore make first-run analysis take minutes. Cached bundles make repeat
+  opens fast. In-flight codehash deduplication prevents overlapping panes from
+  paying for the same missing bundle twice.
 - **Budget is now first-class.** Bundles carry size estimates, the aggregator
   measures against the model window, and the pane surfaces it live. This adds a
   token-accounting surface but prevents silent context overflow and makes "fully

@@ -1,4 +1,4 @@
-# @mev/flat-store (prototype)
+# @mev/flat-store
 
 Content-addressed store that **deduplicates DiscoUI `.flat` sources across
 projects**. A prototype exploring the dedup idea from the discovery notes: the
@@ -35,6 +35,11 @@ node packages/flat-store/dist/cli.js verify l2beat/packages/config/src/projects
 node packages/flat-store/dist/cli.js build l2beat/packages/config/src/projects --out /tmp/flat-store-out
 ```
 
+`trace-api` also calls `deduplicateProjectInPlace()` after each synthetic
+discovery. It keeps the existing `.flat` paths as hard links into
+`<projects>/.flat-store/blobs`, so disco-api needs no submodule modification and
+all reads remain byte-exact.
+
 `<projectsDir>` is only read; the store is written to `--out`.
 
 ## Measured (live corpus, 2026-07-21)
@@ -55,10 +60,6 @@ Most-duplicated sources: `UniswapV3Pool` ×81, `UniswapV2Pair` ×48,
 `Wrapped Ether Token` ×47, `USD Coin Token/FiatTokenV2_2` ×45 — exactly the
 recurring pools/tokens.
 
-## Scope / next steps
-
-Prototype only — it operates on discovery *output* on disk and does not modify
-the read-only `l2beat` submodule. To productionize, `saveFlatSources`
-(`packages/discovery/.../saveDiscoveryResult.ts`) would write into a shared
-content-addressed store and emit a manifest instead of a full `.flat/` copy;
-the same content-addressing extends to ABIs and, via templates, to config.
+The corpus CLI remains useful for reports and migration. The runtime path does
+not modify l2beat source or commit submodule state; it only transforms generated,
+untracked discovery output after `saveFlatSources` completes.

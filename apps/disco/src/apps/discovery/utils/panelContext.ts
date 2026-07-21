@@ -5,6 +5,7 @@
 // so both paths stay identical.
 import { getCode } from '../../../api/api'
 import type { ApiAbi, Field } from '../../../api/types'
+import type { BundleContractInput } from '../../../api/agent'
 import { getProjectQueryOptions } from '../hooks/projectQuery'
 
 export async function formatContractCode(
@@ -143,6 +144,47 @@ export async function resolveSelectedContracts(
     ]) {
       if (!addresses.includes(contract.address)) continue
       out.push({ address: contract.address, name: contract.name })
+    }
+  }
+  return out
+}
+
+/** Every verified contract in a project/incident, for ADR-012 autonomous
+ * bundle preparation. Unverified nodes are skipped because no grounded bundle
+ * can be produced for them. */
+export async function buildAutonomousContracts(
+  project: string,
+): Promise<BundleContractInput[]> {
+  const projectData = await getProjectQueryOptions(project).queryFn()
+  const out: BundleContractInput[] = []
+  for (const chain of projectData.entries) {
+    for (const contract of [
+      ...chain.initialContracts,
+      ...chain.discoveredContracts,
+    ]) {
+      let codeContext: string
+      try {
+        codeContext = (
+          await formatContractCode(project, contract.address, contract.name)
+        ).join('\n')
+      } catch {
+        // Some explorer records are nominally verified but flatten to an empty
+        // body (source hash e3b0…); l2b then has no .flat file. Keep autonomous
+        // preparation useful for the rest of the incident instead of failing
+        // the whole candidate set on one unavailable source.
+        continue
+      }
+      if (!codeContext.trim()) continue
+      const valueContext = [
+        ...formatContractValues(contract, chain.blockNumbers[contract.chain]),
+        ...formatContractAbi(contract),
+      ].join('\n')
+      out.push({
+        address: contract.address,
+        name: contract.name,
+        codeContext,
+        valueContext: valueContext || undefined,
+      })
     }
   }
   return out

@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   buildStore,
   collectFlatFiles,
+  deduplicateProjectInPlace,
   normalizeFlat,
   sha256,
   verifyRoundTrip,
@@ -66,5 +67,18 @@ describe("content-addressed .flat store", () => {
     const v = verifyRoundTrip(files, buildStore(files));
     expect(v.ok).toBe(true);
     expect(v.mismatches).toEqual([]);
+  });
+
+  it("deduplicates generated projects in place while preserving their paths", () => {
+    const store = join(root, ".flat-store");
+    const first = deduplicateProjectInPlace(join(root, "trace-a"), store);
+    const second = deduplicateProjectInPlace(join(root, "trace-b"), store);
+    expect(first?.entries).toHaveLength(2);
+    expect(second?.entries).toHaveLength(2);
+    const a = join(root, "trace-a", ".flat", "WETH.sol");
+    const b = join(root, "trace-b", ".flat", "WETH.sol");
+    expect(readFileSync(a, "utf8")).toBe(WETH);
+    expect(readFileSync(b, "utf8")).toBe(WETH);
+    expect(statSync(a).ino).toBe(statSync(b).ino);
   });
 });

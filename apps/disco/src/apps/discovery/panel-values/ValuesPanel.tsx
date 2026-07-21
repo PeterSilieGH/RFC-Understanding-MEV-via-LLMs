@@ -19,6 +19,8 @@ import { FieldDisplay } from './Field'
 import { FieldTag } from './FieldTag'
 import { Folder } from './Folder'
 import { TemplateDialog } from './template-dialog/TemplateDialog'
+import { BundleEnrichment } from './BundleEnrichment'
+import { ValueConfigEnrichment } from './ValueConfigEnrichment'
 
 export function ValuesPanel() {
   const { project } = useParams()
@@ -190,6 +192,8 @@ function Display({
         )}
         <Category />
       </div>
+      <ValueConfigEnrichment project={project} address={selected.address} />
+      <BundleEnrichment project={project} address={selected.address} />
       {'implementationNames' in selected && selected.implementationNames && (
         <Folder title="Implementation names" collapsed={true}>
           <div className="overflow-x-auto bg-coffee-900 px-5 py-2 font-mono text-sm">

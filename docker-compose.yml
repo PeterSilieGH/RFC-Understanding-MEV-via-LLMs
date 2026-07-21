@@ -101,6 +101,7 @@ services:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       PI_CODING_AGENT_DIR: /pi-agent
+      AGENT_MAX_CONCURRENCY: ${AGENT_MAX_CONCURRENCY:-2}
       HOME: /tmp
     volumes:
       - ${PI_AGENT_DIR:-${HOME}/.pi/agent}:/pi-agent

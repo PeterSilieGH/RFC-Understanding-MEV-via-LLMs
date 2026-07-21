@@ -1,11 +1,35 @@
+import { createHash } from "node:crypto";
 // agent-api: pi-harness analysis skills for the disco Analyze panel (ADR-009).
 import { loadConfig } from "@mev/config";
+import { getProvider } from "@mev/rpc";
+import { ethers } from "ethers";
 import express from "express";
+import {
+  type BundleContractInput,
+  buildBundlePrompt,
+  bundleText,
+  contractCodehash,
+  estimateTokens,
+  parseGeneratedBundles,
+} from "./bundles.js";
 import { listModels } from "./models.js";
 import { type RunEvent, runAnalysis } from "./runner.js";
 import { formatSignatureList, parseFunctionSignatures } from "./signatures.js";
 import { SKILLS } from "./skills.js";
-import { latestVerdict, listAnalyzeTranscripts, listRuns, saveRun } from "./store.js";
+import {
+  type ContractBundle,
+  type ResearchKind,
+  type SessionTurn,
+  addBundleAddress,
+  getBundles,
+  getSession,
+  latestVerdict,
+  listAnalyzeTranscripts,
+  listRuns,
+  saveBundle,
+  saveRun,
+  saveSession,
+} from "./store.js";
 import {
   ANALYZE_CODE_TASK,
   ANALYZE_VALUE_TASK,
@@ -32,6 +56,487 @@ app.get("/api/agent/models", async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+function pickKinds(value: unknown): ResearchKind[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(value.filter((kind): kind is ResearchKind => kind === "mev" || kind === "vuln")),
+  ];
+}
+
+function pickContracts(value: unknown): BundleContractInput[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const c = item as Record<string, unknown>;
+    if (typeof c.address !== "string" || typeof c.codeContext !== "string" || !c.codeContext.trim())
+      return [];
+    return [
+      {
+        address: c.address,
+        name: typeof c.name === "string" ? c.name : undefined,
+        codehash: typeof c.codehash === "string" ? c.codehash : undefined,
+        codeContext: c.codeContext,
+        valueContext: typeof c.valueContext === "string" ? c.valueContext : undefined,
+      },
+    ];
+  });
+}
+
+type ModelRef = { provider: string; id: string } | undefined;
+
+const bundlePreparations = new Map<string, Promise<void>>();
+
+async function generateContractBundles(input: {
+  project: string;
+  identity: { contract: BundleContractInput; codehash: string };
+  missing: ResearchKind[];
+  targetBundleTokens: number;
+  model: ModelRef;
+  emit: (event: RunEvent) => void;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { project, identity, missing, targetBundleTokens, model, emit, signal } = input;
+  let report = "";
+  let analysisError: string | undefined;
+  await runAnalysis(
+    {
+      prompt: buildBundlePrompt(identity.contract, missing, targetBundleTokens),
+      entries: parseFunctionSignatures(identity.contract.codeContext),
+      transcriptHeader: [
+        "Skill: autonomous-bundle",
+        `Target: ${identity.contract.address}`,
+        `Kinds: ${missing.join(", ")}`,
+      ],
+      model,
+    },
+    (event) => {
+      if (event.type === "done") report = event.report;
+      else if (event.type === "error") analysisError = event.message;
+      else if (event.type === "queued" || event.type === "tool") emit(event);
+    },
+    signal,
+  );
+  if (!report) throw new Error(analysisError ?? "analysis returned no bundle output");
+
+  const generatedBundles = parseGeneratedBundles(report, missing);
+  const runId = await saveRun({
+    project,
+    skill: "analyze-code",
+    addresses: normalizeAddresses([identity.contract.address]),
+    question: `ADR-012 bundle generation: ${missing.join(", ")}`,
+    report,
+    transcript: report.slice(0, 4000),
+  });
+  for (const generated of generatedBundles) {
+    const text = [
+      generated.role,
+      generated.entryPoints.join(" "),
+      generated.flowSummary,
+      generated.notes,
+    ].join("\n");
+    await saveBundle({
+      codehash: identity.codehash,
+      kind: generated.kind,
+      addresses: normalizeAddresses([identity.contract.address]),
+      role: generated.role,
+      entryPoints: generated.entryPoints,
+      flowSummary: generated.flowSummary,
+      notes: generated.notes,
+      tokenEstimate: estimateTokens(text),
+      provenanceRunId: runId,
+    });
+  }
+}
+
+async function ensureContractBundles(input: {
+  project: string;
+  identity: { contract: BundleContractInput; codehash: string };
+  kinds: ResearchKind[];
+  targetBundleTokens: number;
+  model: ModelRef;
+  emit: (event: RunEvent) => void;
+  signal: AbortSignal;
+}): Promise<ContractBundle[]> {
+  const { identity, kinds, emit } = input;
+  while (true) {
+    const existing = await getBundles([identity.codehash], kinds);
+    const missing = kinds.filter((kind) => !existing.some((bundle) => bundle.kind === kind));
+    if (missing.length === 0) return existing;
+
+    const active = bundlePreparations.get(identity.codehash);
+    if (active) {
+      emit({ type: "queued" });
+      await active.catch(() => {});
+      continue;
+    }
+
+    const preparation = generateContractBundles({ ...input, missing });
+    bundlePreparations.set(identity.codehash, preparation);
+    try {
+      await preparation;
+    } finally {
+      if (bundlePreparations.get(identity.codehash) === preparation) {
+        bundlePreparations.delete(identity.codehash);
+      }
+    }
+  }
+}
+
+// Autonomous bundle preparation (ADR-012): candidates are the whole incident
+// graph, not a manual node selection. Existing (codehash, kind) rows are reused;
+// all missing active kinds for one contract are emitted by one model call.
+app.post("/api/agent/bundles/prepare", async (req, res) => {
+  const body = req.body as {
+    project?: string;
+    kinds?: unknown;
+    contracts?: unknown;
+    model?: unknown;
+  };
+  const project = body.project?.trim();
+  const kinds = pickKinds(body.kinds);
+  const contracts = pickContracts(body.contracts);
+  if (!project || kinds.length === 0 || contracts.length === 0) {
+    res
+      .status(400)
+      .json({ error: "project, active kinds, and contracts with verified code are required" });
+    return;
+  }
+  const signal = abortSignalFor(req, res);
+  startNdjson(res);
+  try {
+    const model = pickModel(body.model);
+    const modelList = await listModels();
+    const selectedModel = model ?? modelList.default ?? undefined;
+    const contextWindow =
+      modelList.models.find(
+        (candidate) =>
+          candidate.provider === selectedModel?.provider && candidate.id === selectedModel?.id,
+      )?.contextWindow ?? 128_000;
+    const identities = await Promise.all(
+      contracts.map(async (contract) => ({
+        contract,
+        codehash: await resolveContractCodehash(contract),
+      })),
+    );
+    // Reserve prompt/verdict room, then divide the reusable-context allowance
+    // across every candidate kind. This is the pre-aggregation size probe that
+    // nudges generation tighter for small-window models or large incidents.
+    const targetBundleTokens = Math.max(
+      160,
+      Math.min(700, Math.floor((contextWindow * 0.65) / (identities.length * kinds.length))),
+    );
+    await Promise.all(
+      identities.map(async (identity) => {
+        try {
+          const bundles = await ensureContractBundles({
+            project,
+            identity,
+            kinds,
+            targetBundleTokens,
+            model,
+            emit: (event) => writeNdjson(res, event),
+            signal,
+          });
+          for (let bundle of bundles) {
+            const address = normalizeAddresses([identity.contract.address])[0];
+            if (address && !bundle.addresses.includes(address)) {
+              bundle = (await addBundleAddress(bundle.codehash, bundle.kind, address)) ?? bundle;
+            }
+            writeNdjson(res, { type: "bundle", bundle });
+          }
+        } catch (err) {
+          writeNdjson(res, {
+            type: "warning",
+            address: identity.contract.address,
+            message: (err as Error).message,
+          });
+        }
+      }),
+    );
+    writeNdjson(res, { type: "prepared" });
+  } catch (err) {
+    writeNdjson(res, { type: "error", message: (err as Error).message });
+  } finally {
+    res.end();
+  }
+});
+
+async function resolveContractCodehash(contract: BundleContractInput): Promise<string> {
+  if (contract.codehash && /^0x[0-9a-f]{64}$/i.test(contract.codehash)) {
+    return contract.codehash.toLowerCase();
+  }
+  const address = normalizeAddresses([contract.address])[0];
+  if (address) {
+    try {
+      const runtimeCode = await getProvider().getCode(address);
+      if (runtimeCode !== "0x") return ethers.keccak256(runtimeCode);
+    } catch {
+      // Discovery can still operate while the RPC is temporarily unavailable;
+      // the canonical verified-source identity is deterministic and grounded.
+    }
+  }
+  return contractCodehash(contract);
+}
+
+app.post("/api/agent/bundles", async (req, res) => {
+  const body = req.body as { codehashes?: unknown; kinds?: unknown };
+  const codehashes = Array.isArray(body.codehashes)
+    ? body.codehashes.filter((x): x is string => typeof x === "string")
+    : [];
+  const kinds = pickKinds(body.kinds);
+  res.json({ bundles: await getBundles(codehashes, kinds) });
+});
+
+// Agent-backed config/template enrichment for the Values pane (ADR-012 §6).
+// The model proposes complete JSONC documents; disco-api remains the writer and
+// schema validator, preserving its normal untracked-submodule workflow.
+app.post("/api/agent/values/enrich", async (req, res) => {
+  const body = req.body as {
+    project?: string;
+    address?: string;
+    config?: string;
+    template?: string;
+    codeContext?: string;
+    valueContext?: string;
+    model?: unknown;
+  };
+  const project = body.project?.trim();
+  const address = body.address?.trim();
+  if (!project || !address || !body.config || !body.codeContext) {
+    res.status(400).json({ error: "project, address, config, and verified code are required" });
+    return;
+  }
+  const prompt = [
+    "Improve the supplied discovery config JSONC documents for the Values pane.",
+    "Return JSON only with keys config and template (template may be null). Each value is the complete edited JSONC document.",
+    "Add comprehensive field/contract descriptions and grounded permissions. Use custom interact descriptions for direct permissions. Use act only for permission inheritance/forwarding. Keep template config keyed to code, never deployment state; put address-specific facts in config overrides. Never hardcode or assume a permission not proven by supplied code/state. Preserve comments, imports, schemas, handlers, and unrelated settings.",
+    `Project: ${project}`,
+    `Address: ${address}`,
+    "",
+    "Current config.jsonc:",
+    body.config,
+    ...(body.template ? ["", "Current template.jsonc:", body.template] : []),
+    "",
+    "Verified code:",
+    body.codeContext,
+    ...(body.valueContext ? ["", "Discovered state and ABI:", body.valueContext] : []),
+  ].join("\n");
+  startNdjson(res);
+  let report = "";
+  try {
+    await runAnalysis(
+      {
+        prompt,
+        entries: parseFunctionSignatures(body.codeContext),
+        transcriptHeader: ["Skill: value-config-enrichment", `Target: ${address}`],
+        model: pickModel(body.model),
+      },
+      (event) => {
+        if (event.type === "done") report = event.report;
+        else if (event.type !== "delta") writeNdjson(res, event);
+      },
+      abortSignalFor(req, res),
+    );
+    if (report) {
+      const cleaned = report
+        .trim()
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/, "");
+      const value = JSON.parse(cleaned) as { config?: unknown; template?: unknown };
+      if (
+        typeof value.config !== "string" ||
+        (value.template !== null &&
+          value.template !== undefined &&
+          typeof value.template !== "string")
+      ) {
+        throw new Error("value enrichment returned an invalid document payload");
+      }
+      const id = await saveRun({
+        project,
+        skill: "analyze-value",
+        addresses: normalizeAddresses([address]),
+        question: "ADR-012 value-pane config enrichment",
+        report,
+        transcript: report.slice(0, 4000),
+      });
+      writeNdjson(res, {
+        type: "enrichment",
+        id,
+        config: value.config,
+        template: value.template ?? null,
+      });
+    }
+  } catch (err) {
+    writeNdjson(res, { type: "error", message: (err as Error).message });
+  } finally {
+    res.end();
+  }
+});
+
+const DISCOVERY_PROMPTS: Record<ResearchKind, string> = {
+  mev: "You are conducting grounded MEV research. Explain ordering, value flow, extraction mechanism, affected parties, uncertainty, and supporting contract evidence. Do not provide an executable extraction bot.",
+  vuln: "You are conducting grounded smart-contract vulnerability research. Explain trust boundaries, reachable failure modes, impact, prerequisites, uncertainty, and supporting contract evidence. Do not claim an exploit without evidence.",
+};
+
+function discoveryBase(
+  kind: ResearchKind,
+  bundles: ContractBundle[],
+  traceTree: string,
+  swaps: string,
+): string {
+  return [
+    DISCOVERY_PROMPTS[kind],
+    "Use only the supplied bundles and incident evidence. Cite bundle addresses and entry points.",
+    "",
+    "Selected reusable contract bundles:",
+    ...bundles.map((bundle, i) => `\n=== Bundle ${i + 1} ===\n${bundleText(bundle)}`),
+    ...(traceTree ? ["", "Structural trace tree:", traceTree] : []),
+    ...(swaps ? ["", "Decoded swaps:", swaps] : []),
+  ].join("\n");
+}
+
+// Persistent, kind-parameterized Discovery verdict/chat. Durable turns rehydrate
+// after restart; a live pi session is reused while its model + bundle fingerprint
+// is unchanged. The client sends only the new question on follow-ups.
+app.post("/api/agent/discovery", async (req, res) => {
+  const body = req.body as {
+    project?: string;
+    incident?: string;
+    kind?: unknown;
+    codehashes?: unknown;
+    question?: string;
+    traceTree?: string;
+    swaps?: string;
+    model?: unknown;
+    reset?: boolean;
+  };
+  const project = body.project?.trim();
+  const incident = body.incident?.trim() || project;
+  const kind = body.kind === "mev" || body.kind === "vuln" ? body.kind : undefined;
+  const codehashes = Array.isArray(body.codehashes)
+    ? body.codehashes.filter((x): x is string => typeof x === "string")
+    : [];
+  if (!project || !incident || !kind || codehashes.length === 0) {
+    res.status(400).json({ error: "project, incident, kind, and selected bundles are required" });
+    return;
+  }
+  const bundles = await getBundles(codehashes, [kind]);
+  if (bundles.length === 0) {
+    res.status(409).json({ error: `no selected ${kind} bundles are available` });
+    return;
+  }
+  const model = pickModel(body.model);
+  const base = discoveryBase(kind, bundles, body.traceTree?.trim() ?? "", body.swaps?.trim() ?? "");
+  const modelList = await listModels();
+  const selectedModel = model ?? modelList.default ?? undefined;
+  const contextWindow =
+    modelList.models.find(
+      (candidate) =>
+        candidate.provider === selectedModel?.provider && candidate.id === selectedModel?.id,
+    )?.contextWindow ?? 128_000;
+  const inputTokens = estimateTokens(base);
+  if (inputTokens > Math.floor(contextWindow * 0.85)) {
+    res.status(413).json({
+      error: `selected bundles consume ${inputTokens} of ${contextWindow} context tokens; deselect lower-relevance bundles`,
+      inputTokens,
+      contextWindow,
+    });
+    return;
+  }
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify(bundles.map((b) => [b.codehash, b.updatedAt])))
+    .digest("hex");
+  const previous = await getSession(project, incident, kind);
+  const compatible =
+    previous &&
+    !body.reset &&
+    previous.bundleFingerprint === fingerprint &&
+    previous.modelProvider === (model?.provider ?? null) &&
+    previous.modelId === (model?.id ?? null);
+  const turns: SessionTurn[] = compatible ? previous.turns : [];
+  const question =
+    body.question?.trim() ||
+    (turns.length === 0
+      ? `Produce the ${kind === "mev" ? "MEV" : "vulnerability"} Discovery verdict for this incident.`
+      : "Reassess the verdict using the currently selected evidence.");
+  const history = turns
+    .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.text}`)
+    .join("\n\n");
+  const rehydrationPrompt = [
+    base,
+    ...(history ? ["", "Durable conversation so far:", history] : []),
+    "",
+    `User: ${question}`,
+  ].join("\n");
+  const persistentKey = [
+    project,
+    incident,
+    kind,
+    fingerprint,
+    model?.provider ?? "default",
+    model?.id ?? "default",
+  ].join(":");
+  startNdjson(res);
+  let report = "";
+  try {
+    await runAnalysis(
+      {
+        prompt: question,
+        rehydrationPrompt,
+        persistentKey,
+        transcriptHeader: [`Discovery: ${kind}`, `Bundles: ${bundles.length}`],
+        model,
+        systemPromptSuffix: DISCOVERY_PROMPTS[kind],
+      },
+      (event) => {
+        if (event.type === "done") report = event.report;
+        writeNdjson(res, event);
+      },
+      abortSignalFor(req, res),
+    );
+    if (report) {
+      const saved = await saveSession({
+        project,
+        incident,
+        kind,
+        bundleFingerprint: fingerprint,
+        modelProvider: model?.provider ?? null,
+        modelId: model?.id ?? null,
+        turns: compactSessionTurns([
+          ...turns,
+          { role: "user", text: question },
+          { role: "assistant", text: report },
+        ]),
+      });
+      writeNdjson(res, { type: "session", session: saved });
+    }
+  } catch (err) {
+    writeNdjson(res, { type: "error", message: (err as Error).message });
+  } finally {
+    res.end();
+  }
+});
+
+function compactSessionTurns(turns: SessionTurn[]): SessionTurn[] {
+  const out: SessionTurn[] = [];
+  let chars = 0;
+  for (const turn of turns.slice(-24).reverse()) {
+    if (chars + turn.text.length > 60_000 && out.length >= 2) break;
+    out.push(turn);
+    chars += turn.text.length;
+  }
+  return out.reverse();
+}
+
+app.get("/api/agent/discovery/session", async (req, res) => {
+  const project = typeof req.query.project === "string" ? req.query.project : "";
+  const incident = typeof req.query.incident === "string" ? req.query.incident : project;
+  const kind = req.query.kind === "mev" || req.query.kind === "vuln" ? req.query.kind : undefined;
+  if (!project || !kind)
+    return void res.status(400).json({ error: "project and kind are required" });
+  res.json({ session: await getSession(project, incident, kind) });
 });
 
 // Runs for a project, newest first; drives the node ticks and verdict display.
@@ -142,7 +647,7 @@ app.post("/api/agent/analyze", async (req, res) => {
         model: pickModel(body.model),
       },
       emit,
-      abortSignalFor(req),
+      abortSignalFor(req, res),
     );
     if (finalReport) {
       const id = await saveRun({
@@ -253,7 +758,7 @@ app.post("/api/agent/verdict", async (req, res) => {
         collectImportant: true,
       },
       emit,
-      abortSignalFor(req),
+      abortSignalFor(req, res),
     );
     if (finalReport) {
       const id = await saveRun({
@@ -337,7 +842,7 @@ app.post("/api/agent/verdict/chat", async (req, res) => {
         model: pickModel(body.model),
       },
       (event) => writeNdjson(res, event),
-      abortSignalFor(req),
+      abortSignalFor(req, res),
     );
   } catch (err) {
     writeNdjson(res, { type: "error", message: (err as Error).message });
@@ -418,9 +923,12 @@ function writeNdjson(
   res.write(`${JSON.stringify(event)}\n`);
 }
 
-function abortSignalFor(req: express.Request): AbortSignal {
+function abortSignalFor(req: express.Request, res: express.Response): AbortSignal {
   const controller = new AbortController();
-  req.on("close", () => controller.abort());
+  req.once("aborted", () => controller.abort());
+  res.once("close", () => {
+    if (!res.writableEnded) controller.abort();
+  });
   return controller.signal;
 }
 

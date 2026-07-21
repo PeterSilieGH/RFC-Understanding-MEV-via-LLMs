@@ -141,10 +141,8 @@ export const NodeView = memo(NodeViewImpl, (prev, next) => {
   )
 })
 
-// DIVERGENCE(mev): node header markers (ADR-009) — a red "C" once analyze-code
-// has covered this address, a red "V" once analyze-value has (red for contrast
-// against the node title), and an amber "!" when the verdict flagged the node
-// as important but nothing has analyzed it yet (suppressed once covered).
+// DIVERGENCE(mev): ADR-012 typed bundle coverage. The legacy prop slots remain
+// stable for the graph renderer, but now mean MEV and vulnerability bundles.
 function AnalyzeTicks(props: {
   hasCodeMark: boolean
   hasValueMark: boolean
@@ -156,12 +154,12 @@ function AnalyzeTicks(props: {
   return (
     <span className="flex items-center gap-px font-bold text-[9px] leading-none">
       {props.hasCodeMark && (
-        <span className="text-aux-red" title="Analyzed: code">
-          C
+        <span className="text-aux-red" title="MEV bundle available">
+          M
         </span>
       )}
       {props.hasValueMark && (
-        <span className="text-aux-red" title="Analyzed: value">
+        <span className="text-aux-red" title="Vulnerability bundle available">
           V
         </span>
       )}

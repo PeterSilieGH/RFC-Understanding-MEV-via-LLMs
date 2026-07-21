@@ -9,6 +9,7 @@ export interface ModelInfo {
   provider: string;
   id: string;
   label: string;
+  contextWindow: number;
 }
 
 export interface ModelsResponse {
@@ -20,7 +21,12 @@ export async function listModels(): Promise<ModelsResponse> {
   const { modelRegistry, settingsManager } = await loadPiConfig();
   const available = await modelRegistry.getAvailable();
   const models = available
-    .map((m) => ({ provider: m.provider, id: m.id, label: `${m.provider}/${m.id}` }))
+    .map((m) => ({
+      provider: m.provider,
+      id: m.id,
+      label: `${m.provider}/${m.id}`,
+      contextWindow: m.contextWindow,
+    }))
     .sort((a, b) => a.label.localeCompare(b.label));
 
   const provider = settingsManager.getDefaultProvider();

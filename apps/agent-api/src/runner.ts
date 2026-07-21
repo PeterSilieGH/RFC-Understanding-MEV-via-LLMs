@@ -19,7 +19,9 @@ import {
   defineTool,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
+import { loadConfig } from "@mev/config";
 import { Type } from "typebox";
+import { RunScheduler } from "./scheduler.js";
 import { type FunctionEntry, lookupFunction } from "./signatures.js";
 
 export type RunEvent =
@@ -43,7 +45,20 @@ export interface RunRequest {
   /** enable the flag_important_nodes tool (build-verdict only): the model
    * reports addresses it deems important but not yet analyzed (ADR-009). */
   collectImportant?: boolean;
+  /** ADR-012 Discovery session cache key. A stable key keeps the live pi
+   * session between turns; changing the bundle/model fingerprint starts a new
+   * one so stale context is never served. */
+  persistentKey?: string;
+  /** Used only when a persistent session must be created/rehydrated. */
+  rehydrationPrompt?: string;
+  /** Kind-specific Discovery framing appended to the shared project system
+   * prompt. Persistent cache keys must distinguish different suffixes. */
+  systemPromptSuffix?: string;
 }
+
+type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+const persistentSessions = new Map<string, PiSession>();
+const MAX_PERSISTENT_SESSIONS = 24;
 
 /** 20-byte hex address, lowercased. Drops anything that isn't one. */
 function normalizeAddressList(addresses: unknown): string[] {
@@ -78,27 +93,20 @@ export async function loadPiConfig(): Promise<{
   return { authStorage, modelRegistry, settingsManager, cwd, agentDir };
 }
 
-// Serialize runs process-wide: bound the load on the model API and keep memory
-// flat (same reasoning as trace-api's discovery queue). A second request emits
-// a "queued" event through the stream while it waits.
-let queue: Promise<void> = Promise.resolve();
-let pending = 0;
+// Bound process-wide model pressure. Independent ephemeral runs may overlap;
+// turns for one persistent Discovery session remain strictly ordered.
+const scheduler = new RunScheduler(loadConfig().AGENT_MAX_CONCURRENCY);
 
 export function runAnalysis(
   req: RunRequest,
   emit: (event: RunEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const alreadyBusy = pending > 0;
-  pending++;
-  if (alreadyBusy) emit({ type: "queued" });
-  const run = queue.then(() => execute(req, emit, signal));
-  queue = run
-    .catch(() => {})
-    .finally(() => {
-      pending--;
-    });
-  return run;
+  return scheduler.run(
+    req.persistentKey,
+    () => (signal.aborted ? Promise.resolve() : execute(req, emit, signal)),
+    () => emit({ type: "queued" }),
+  );
 }
 
 /** `.pi/SYSTEM.md` from cwd, falling back to the agent dir. Undefined = keep
@@ -120,8 +128,14 @@ async function execute(
   emit: (event: RunEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
+  const cached = req.persistentKey ? persistentSessions.get(req.persistentKey) : undefined;
+  if (cached) {
+    await runSessionTurn(cached, req.prompt, req, emit, signal, false, []);
+    return;
+  }
   const { authStorage, modelRegistry, settingsManager, cwd, agentDir } = await loadPiConfig();
   const systemPrompt = loadSystemPrompt(cwd, agentDir);
+  const effectiveSystemPrompt = [systemPrompt, req.systemPromptSuffix].filter(Boolean).join("\n\n");
 
   // Explicit model override from the top-bar picker. When absent,
   // createAgentSession resolves the settings default (project .pi/settings.json
@@ -171,7 +185,7 @@ async function execute(
     agentDir,
     settingsManager,
     noExtensions: true, // only our custom tool; no surprise project extensions
-    systemPromptOverride: systemPrompt ? () => systemPrompt : undefined,
+    systemPromptOverride: effectiveSystemPrompt ? () => effectiveSystemPrompt : undefined,
   });
   await loader.reload({ resolveProjectTrust: async () => true });
   // loader.reload() rebuilds settings from files; re-apply our runtime tweaks.
@@ -180,7 +194,7 @@ async function execute(
     retry: { enabled: true, maxRetries: 2 },
   });
 
-  let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+  let session: PiSession;
   let modelFallbackMessage: string | undefined;
   try {
     ({ session, modelFallbackMessage } = await createAgentSession({
@@ -208,6 +222,36 @@ async function execute(
     return;
   }
 
+  if (req.persistentKey) {
+    persistentSessions.set(req.persistentKey, session);
+    while (persistentSessions.size > MAX_PERSISTENT_SESSIONS) {
+      const oldest = persistentSessions.keys().next().value as string | undefined;
+      if (!oldest) break;
+      persistentSessions.get(oldest)?.dispose();
+      persistentSessions.delete(oldest);
+    }
+  }
+
+  await runSessionTurn(
+    session,
+    req.rehydrationPrompt ?? req.prompt,
+    req,
+    emit,
+    signal,
+    !req.persistentKey,
+    toolLog,
+  );
+}
+
+async function runSessionTurn(
+  session: PiSession,
+  prompt: string,
+  req: RunRequest,
+  emit: (event: RunEvent) => void,
+  signal: AbortSignal,
+  dispose: boolean,
+  toolLog: string[],
+): Promise<void> {
   let report = "";
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -220,7 +264,7 @@ async function execute(
   signal.addEventListener("abort", onAbort);
 
   try {
-    await session.prompt(req.prompt);
+    await session.prompt(prompt);
     // A provider call can fail mid-turn without throwing — the harness records
     // it on state.errorMessage and ends the turn with no text. Surface that
     // instead of emitting an empty, misleading "done".
@@ -236,7 +280,7 @@ async function execute(
   } finally {
     signal.removeEventListener("abort", onAbort);
     unsubscribe();
-    session.dispose();
+    if (dispose) session.dispose();
   }
 }
 

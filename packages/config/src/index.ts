@@ -15,6 +15,7 @@ const configSchema = z.object({
   EXPLORER_API_PORT: z.coerce.number().int().default(3000),
   TRACE_API_PORT: z.coerce.number().int().default(2022),
   AGENT_API_PORT: z.coerce.number().int().default(3100),
+  AGENT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(2),
   DISCO_API_PORT: z.coerce.number().int().default(2021),
 
   // Where synthetic trace-<hash8> discovery projects are written (ADR-008).

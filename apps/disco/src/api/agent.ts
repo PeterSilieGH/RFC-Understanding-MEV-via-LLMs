@@ -19,6 +19,11 @@ export type AgentStreamEvent =
   | { type: 'done'; report: string; transcript: string }
   | { type: 'saved'; id: number }
   | { type: 'error'; message: string }
+  | { type: 'warning'; address: string; message: string }
+  | { type: 'bundle'; bundle: ContractBundle }
+  | { type: 'prepared' }
+  | { type: 'session'; session: DiscoverySession }
+  | { type: 'enrichment'; id: number; config: string; template: string | null }
 
 export interface AgentRunSummary {
   id: number
@@ -40,6 +45,44 @@ export interface AgentModelRef {
 
 export interface AgentModel extends AgentModelRef {
   label: string
+  contextWindow: number
+}
+
+export type ResearchKind = 'mev' | 'vuln'
+
+export interface ContractBundle {
+  codehash: string
+  kind: ResearchKind
+  addresses: string[]
+  role: string
+  entryPoints: string[]
+  flowSummary: string
+  notes: string
+  tokenEstimate: number
+  provenanceRunId: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BundleContractInput {
+  address: string
+  name?: string
+  codeContext: string
+  valueContext?: string
+}
+
+export interface DiscoveryTurn {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+export interface DiscoverySession {
+  project: string
+  incident: string
+  kind: ResearchKind
+  bundleFingerprint: string
+  turns: DiscoveryTurn[]
+  updatedAt: string
 }
 
 export async function getAgentSkills(): Promise<AgentSkill[]> {
@@ -90,6 +133,61 @@ export function streamAnalyze(
   signal?: AbortSignal,
 ): AsyncGenerator<AgentStreamEvent> {
   return streamNdjson('/api/agent/analyze', req, signal)
+}
+
+export function streamPrepareBundles(
+  req: {
+    project: string
+    kinds: ResearchKind[]
+    contracts: BundleContractInput[]
+    model?: AgentModelRef
+  },
+  signal?: AbortSignal,
+): AsyncGenerator<AgentStreamEvent> {
+  return streamNdjson('/api/agent/bundles/prepare', req, signal)
+}
+
+export function streamDiscovery(
+  req: {
+    project: string
+    incident?: string
+    kind: ResearchKind
+    codehashes: string[]
+    question?: string
+    traceTree?: string
+    swaps?: string
+    model?: AgentModelRef
+    reset?: boolean
+  },
+  signal?: AbortSignal,
+): AsyncGenerator<AgentStreamEvent> {
+  return streamNdjson('/api/agent/discovery', req, signal)
+}
+
+export function streamValueEnrichment(
+  req: {
+    project: string
+    address: string
+    config: string
+    template?: string
+    codeContext: string
+    valueContext?: string
+    model?: AgentModelRef
+  },
+  signal?: AbortSignal,
+): AsyncGenerator<AgentStreamEvent> {
+  return streamNdjson('/api/agent/values/enrich', req, signal)
+}
+
+export async function getDiscoverySession(
+  project: string,
+  incident: string,
+  kind: ResearchKind,
+): Promise<DiscoverySession | null> {
+  const query = new URLSearchParams({ project, incident, kind })
+  const res = await fetch(`/api/agent/discovery/session?${query}`)
+  if (!res.ok) throw new Error(res.statusText)
+  return ((await res.json()) as { session: DiscoverySession | null }).session
 }
 
 export interface VerdictRequest {

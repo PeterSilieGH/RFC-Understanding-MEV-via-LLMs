@@ -58,6 +58,40 @@ test.describe("disco-web (cloned DiscoUI + trace panel)", () => {
     await expect(page.getByRole("option", { name: "trace" })).toHaveCount(0);
   });
 
+  test("research modes are opt-in and the panel is always named Discovery", async ({
+    page,
+    request,
+  }) => {
+    const projects = await (await request.get(`${DISCO_API}/api/projects`)).json();
+    const project = projects.find(
+      (candidate: { name: string }) => !candidate.name.startsWith("trace-"),
+    )?.name;
+    expect(project).toBeTruthy();
+
+    const preparations: string[] = [];
+    page.on("request", (req) => {
+      if (req.url().includes("/api/agent/bundles/prepare")) preparations.push(req.url());
+    });
+    await page.goto(`${DISCO_WEB}/ui/p/${project}`);
+
+    await expect(page.getByRole("button", { name: "MEV Research" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    await expect(page.getByRole("button", { name: "Vulnerability Research" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    const switcher = page.getByRole("combobox", { name: "Panel" }).nth(2);
+    await switcher.click({ timeout: 20_000 });
+    await page.getByRole("option", { name: "Discovery" }).click();
+    await expect(switcher).toHaveText(/Discovery/);
+    await expect(page.getByText(/Select MEV Research or Vulnerability Research/)).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(preparations).toHaveLength(0);
+  });
+
   test("renders a live trace graph from the manual /ui/trace form", async ({ page }) => {
     const txHash = await anyRecentTxHash();
     test.skip(txHash === null, "external RPC node not reachable");

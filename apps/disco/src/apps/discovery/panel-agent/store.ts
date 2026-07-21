@@ -6,6 +6,7 @@
 // on both the dependency graph (eth:0x…) and the trace graph (0x…).
 import { create } from 'zustand'
 import { getAgentRuns } from '../../../api/agent'
+import type { ContractBundle } from '../../../api/agent'
 
 interface ProjectMarks {
   code: string[]
@@ -13,6 +14,7 @@ interface ProjectMarks {
   // DIVERGENCE(mev): addresses the build-verdict skill flagged as important
   // but not yet analyzed (ADR-009). Distinct from code/value coverage.
   important: string[]
+  bundles: ContractBundle[]
 }
 
 interface State {
@@ -24,9 +26,13 @@ interface State {
     addresses: string[],
   ) => void
   setImportant: (project: string, addresses: string[]) => void
+  addBundleMarks: (
+    project: string,
+    bundle: ContractBundle,
+  ) => void
 }
 
-const EMPTY: ProjectMarks = { code: [], value: [], important: [] }
+const EMPTY: ProjectMarks = { code: [], value: [], important: [], bundles: [] }
 
 function union(a: string[], b: string[]): string[] {
   return [...new Set([...a, ...b.map((x) => x.toLowerCase())])]
@@ -55,6 +61,7 @@ export const useAgentMarksStore = create<State>()((set) => ({
           code: union([], code),
           value: union([], value),
           important: union([], important ?? []),
+          bundles: s.byProject[project]?.bundles ?? [],
         },
       },
     }))
@@ -79,6 +86,30 @@ export const useAgentMarksStore = create<State>()((set) => ({
         byProject: {
           ...s.byProject,
           [project]: { ...current, important: union([], addresses) },
+        },
+      }
+    }),
+  // ADR-012 reuses the existing two compact marker slots as typed bundle
+  // coverage: `code` holds MEV and `value` holds vulnerability coverage.
+  addBundleMarks: (project, bundle) =>
+    set((s) => {
+      const current = s.byProject[project] ?? EMPTY
+      const key = bundle.kind === 'mev' ? 'code' : 'value'
+      const bundles = [
+        ...current.bundles.filter(
+          (existing) =>
+            existing.codehash !== bundle.codehash || existing.kind !== bundle.kind,
+        ),
+        bundle,
+      ]
+      return {
+        byProject: {
+          ...s.byProject,
+          [project]: {
+            ...current,
+            [key]: union(current[key], bundle.addresses),
+            bundles,
+          },
         },
       }
     }),

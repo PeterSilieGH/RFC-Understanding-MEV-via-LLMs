@@ -39,6 +39,12 @@ importers:
       '@mev/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@mev/rpc':
+        specifier: workspace:*
+        version: link:../../packages/rpc
+      ethers:
+        specifier: ^6.13.4
+        version: 6.16.0
       express:
         specifier: ^5.2.1
         version: 5.2.1
@@ -210,6 +216,9 @@ importers:
       '@mev/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@mev/flat-store':
+        specifier: workspace:*
+        version: link:../../packages/flat-store
       '@mev/rpc':
         specifier: workspace:*
         version: link:../../packages/rpc

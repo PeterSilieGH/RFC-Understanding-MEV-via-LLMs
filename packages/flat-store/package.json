@@ -1,7 +1,7 @@
 {
   "name": "@mev/flat-store",
   "version": "1.0.0",
-  "description": "Prototype: content-addressed store that deduplicates DiscoUI .flat sources across projects (keyed by flattening hash).",
+  "description": "Content-addressed store that deduplicates DiscoUI .flat sources across projects.",
   "private": true,
   "type": "module",
   "main": "dist/index.js",

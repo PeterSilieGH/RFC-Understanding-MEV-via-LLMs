@@ -9,7 +9,6 @@ import {
   useDockingHook,
 } from '../../../components/docking'
 import { IS_READONLY } from '../../../config/readonly'
-import { IconChatbot } from '../../../icons/IconChatbot'
 import { IconChecked } from '../../../icons/IconChcked'
 import { IconChevronDown } from '../../../icons/IconChevronDown'
 import { IconCode } from '../../../icons/IconCode'
@@ -21,7 +20,6 @@ import { IconSigma } from '../../../icons/IconSigma'
 import { IconStamp } from '../../../icons/IconStamp'
 import { IconTerminal } from '../../../icons/IconTerminal'
 import { IconWebApp } from '../../../icons/IconWebApp'
-import { AgentAnalyzePanel } from '../panel-agent/AgentAnalyzePanel'
 import { CodePanel } from '../panel-code/CodePanel'
 import { ConfigPanel } from '../panel-config/ConfigPanel'
 import { DiffHistoryPanel } from '../panel-diff-history/DiffHistoryPanel'
@@ -40,7 +38,6 @@ import { TabExtras } from './TabExtras'
 export const PANEL_IDS = [
   'list',
   'nodes',
-  'analyze',
   'preview',
   'code',
   'values',
@@ -56,7 +53,7 @@ export type PanelId = (typeof PANEL_IDS)[number]
 // stable (storage keys, persisted layouts) while the tab shows a friendlier
 // name — the Preview panel is the MEV "Incident" view (ADR-009).
 const PANEL_LABELS: Partial<Record<PanelId, string>> = {
-  preview: 'incident',
+  preview: 'Discovery',
 }
 
 interface Panel {
@@ -74,10 +71,6 @@ const PANELS: Record<PanelId, Panel> = {
   nodes: { icon: IconNodes, body: NodesTracePanel },
   code: { icon: IconCode, body: CodePanel },
   preview: { icon: IconWebApp, body: PreviewPanel },
-  // DIVERGENCE(mev): agentic MEV analysis via the pi harness (ADR-009),
-  // route-agnostic — runs against the nodes selected in the graph on both the
-  // project and trace-workspace routes; supersedes the stock l2b analyzer.
-  analyze: { icon: IconChatbot, body: AgentAnalyzePanel },
   terminal: { icon: IconTerminal, body: TerminalPanel },
   template: { icon: IconStamp, body: TemplatePanel },
   config: { icon: IconGear, body: ConfigPanel },
@@ -85,7 +78,7 @@ const PANELS: Record<PanelId, Panel> = {
 }
 
 export function isAllowedPanel(id: PanelId): boolean {
-  return !(IS_READONLY && (id === 'terminal' || id === 'analyze'))
+  return !(IS_READONLY && id === 'terminal')
 }
 
 function isPanelId(key: string): key is PanelId {
@@ -94,10 +87,11 @@ function isPanelId(key: string): key is PanelId {
 
 function PanelLabel(props: { id: PanelId }) {
   const Icon = PANELS[props.id].icon
+  const label = PANEL_LABELS[props.id] ?? props.id
   return (
     <span className="flex items-center gap-1.5">
       <Icon className="size-3.5 shrink-0" />
-      <span>{PANEL_LABELS[props.id] ?? props.id}</span>
+      <span>{label}</span>
     </span>
   )
 }

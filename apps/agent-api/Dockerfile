@@ -6,6 +6,7 @@ WORKDIR /repo
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY packages/config ./packages/config
 COPY packages/db ./packages/db
+COPY packages/rpc ./packages/rpc
 COPY apps/agent-api ./apps/agent-api
 RUN pnpm install --frozen-lockfile --filter @mev/agent-api... \
     && pnpm --filter @mev/agent-api... build

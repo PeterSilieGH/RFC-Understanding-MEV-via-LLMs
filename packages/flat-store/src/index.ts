@@ -20,7 +20,16 @@
 // would unlock, without sacrificing exactness.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative, sep } from "node:path";
 
 export interface FlatFile {
@@ -241,4 +250,75 @@ export function verifyRoundTrip(
     }
   }
   return { ok: mismatches.length === 0, mismatches };
+}
+
+/**
+ * Production path for generated discovery projects (ADR-012 §7).
+ *
+ * Each source body is stored once under `<storeDir>/blobs/<sha256>.sol`, a
+ * manifest is written under `manifests/`, and the project's original `.flat`
+ * file is atomically replaced by a hard link to that blob. Disco/l2b continues
+ * to see the exact paths it expects, while the filesystem stores one inode for
+ * recurring bodies. The shared store must be on the same filesystem.
+ */
+export function deduplicateProjectInPlace(
+  projectDir: string,
+  storeDir: string,
+): ProjectManifest | null {
+  const flatDir = join(projectDir, ".flat");
+  let flatStat: ReturnType<typeof statSync>;
+  try {
+    flatStat = statSync(flatDir);
+  } catch {
+    return null;
+  }
+  if (!flatStat.isDirectory()) return null;
+
+  const blobsDir = join(storeDir, "blobs");
+  const manifestsDir = join(storeDir, "manifests");
+  mkdirSync(blobsDir, { recursive: true });
+  mkdirSync(manifestsDir, { recursive: true });
+  const entries: ManifestEntry[] = [];
+
+  for (const abs of walk(flatDir)) {
+    if (!abs.endsWith(".sol")) continue;
+    const content = readFileSync(abs, "utf8");
+    const hash = sha256(content);
+    const bytes = Buffer.byteLength(content, "utf8");
+    const blob = join(blobsDir, `${hash.slice(2)}.sol`);
+    try {
+      writeFileSync(blob, content, { flag: "wx" });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      // A hash collision/corrupt store must never silently replace source.
+      if (readFileSync(blob, "utf8") !== content) {
+        throw new Error(`flat-store hash collision for ${hash}`);
+      }
+    }
+
+    const temporaryLink = `${abs}.flat-store-link`;
+    try {
+      unlinkSync(temporaryLink);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    linkSync(blob, temporaryLink);
+    renameSync(temporaryLink, abs);
+    entries.push({
+      path: relative(flatDir, abs).split(sep).join("/"),
+      hash,
+      bytes,
+    });
+  }
+
+  const project = projectDir.split(sep).filter(Boolean).at(-1) ?? "project";
+  const manifest = {
+    project,
+    entries: entries.sort((a, b) => a.path.localeCompare(b.path)),
+  };
+  const manifestPath = join(manifestsDir, `${project}.json`);
+  const tempManifest = `${manifestPath}.tmp`;
+  writeFileSync(tempManifest, `${JSON.stringify(manifest, null, 2)}\n`);
+  renameSync(tempManifest, manifestPath);
+  return manifest;
 }

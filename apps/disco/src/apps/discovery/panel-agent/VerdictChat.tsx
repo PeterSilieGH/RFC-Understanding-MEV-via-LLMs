@@ -34,7 +34,9 @@ export function VerdictChat(props: {
   const abortRef = useRef<AbortController | null>(null)
   // The incident context (trace tree + swaps) is the same for every follow-up,
   // so build it once per txHash instead of re-fetching on each turn.
-  const contextRef = useRef<{ txHash?: string; traceTree: string; swaps: string }>()
+  const contextRef = useRef<
+    { txHash?: string; traceTree: string; swaps: string } | undefined
+  >(undefined)
 
   useEffect(() => {
     return () => abortRef.current?.abort()
@@ -196,7 +198,7 @@ export function VerdictChat(props: {
 function appendToLast(turns: Turn[], text: string): Turn[] {
   if (turns.length === 0) return turns
   const last = turns[turns.length - 1]
-  if (last.role !== 'assistant') return turns
+  if (!last || last.role !== 'assistant') return turns
   return [
     ...turns.slice(0, -1),
     { ...last, text: last.text + text, pending: true },

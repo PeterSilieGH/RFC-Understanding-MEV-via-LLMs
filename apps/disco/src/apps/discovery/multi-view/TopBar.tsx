@@ -14,6 +14,7 @@ import { IconPlus } from '../../../icons/IconPlus'
 import { IconRefresh } from '../../../icons/IconRefresh'
 import { useTerminalStore } from '../panel-terminal/store'
 import { useDiscoveryCommand } from '../panel-terminal/useDiscoveryCommand'
+import { useResearchStore } from '../panel-agent/research-store'
 import { fmtAmount } from '../panel-trace/mev-format'
 import { Search } from '../search/Search'
 import { SettingsDialog } from './SettingsDialog'
@@ -76,6 +77,9 @@ export function TopBar(props: { project: string }) {
   const resetLayout = useDockingStore((state) => state.resetLayout)
   const { command } = useTerminalStore()
   const { killCommand, discover } = useDiscoveryCommand()
+  const mevResearch = useResearchStore((state) => state.mev)
+  const vulnResearch = useResearchStore((state) => state.vuln)
+  const toggleResearch = useResearchStore((state) => state.toggle)
 
   // By default when using top bar
   const useDevMode = true
@@ -92,6 +96,34 @@ export function TopBar(props: { project: string }) {
         </div>
       </div>
       <div className="hidden gap-3 md:flex">
+        <div className="flex items-center gap-1 border-coffee-400/30 border-r pr-3">
+          <button
+            type="button"
+            aria-pressed={mevResearch}
+            onClick={() => toggleResearch('mev')}
+            className={clsx(
+              'rounded-sm border px-2 py-1 text-xs',
+              mevResearch
+                ? 'border-autumn-300 bg-autumn-300 text-black'
+                : 'border-coffee-500 text-coffee-300',
+            )}
+          >
+            MEV Research
+          </button>
+          <button
+            type="button"
+            aria-pressed={vulnResearch}
+            onClick={() => toggleResearch('vuln')}
+            className={clsx(
+              'rounded-sm border px-2 py-1 text-xs',
+              vulnResearch
+                ? 'border-autumn-300 bg-autumn-300 text-black'
+                : 'border-coffee-500 text-coffee-300',
+            )}
+          >
+            Vulnerability Research
+          </button>
+        </div>
         {!IS_READONLY && (
           <div className="flex justify-center gap-1 border-coffee-400/30 border-r pr-3">
             <Button

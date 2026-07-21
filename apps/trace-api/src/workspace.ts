@@ -14,6 +14,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "@mev/config";
+import { deduplicateProjectInPlace } from "@mev/flat-store";
 import type { DebugTransactionCall } from "@mev/trace-graph";
 import { ethers } from "ethers";
 import { getTraceCached } from "./provider.js";
@@ -243,6 +244,13 @@ async function prepareWorkspace(project: string, legs: IncidentLeg[]): Promise<v
     if (!existsSync(join(projectDir(project), "discovered.json"))) {
       throw new Error("discovery finished but wrote no discovered.json");
     }
+    // ADR-012: keep l2b's expected per-project paths but back recurring source
+    // bodies with one shared content-addressed inode. The hidden store lives in
+    // the same bind-mounted project root, outside every synthetic project.
+    deduplicateProjectInPlace(
+      projectDir(project),
+      join(config.DISCOVERY_PROJECTS_DIR, ".flat-store"),
+    );
     enrichmentCache.delete(project); // a re-run rewrote discovered.json
     state.status = "ready";
   } catch (err) {

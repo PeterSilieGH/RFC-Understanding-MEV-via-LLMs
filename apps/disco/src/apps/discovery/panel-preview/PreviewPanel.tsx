@@ -11,7 +11,7 @@ import type {
 } from '../../../api/types'
 import { Checkbox } from '../../../components/Checkbox'
 import { LoadingState } from '../../../components/LoadingState'
-import { VerdictSection } from '../panel-agent/VerdictSection'
+import { DiscoveryPanes } from '../panel-agent/DiscoveryPanes'
 import { AddressDisplay } from '../panel-values/AddressDisplay'
 import { usePanelStore } from '../store/panel-store'
 
@@ -34,7 +34,7 @@ export function PreviewPanel() {
     <div className="flex h-full w-full flex-col text-sm">
       {/* DIVERGENCE(mev): the agentic verdict for this transaction/incident
           (ADR-009) sits above the stock preview. */}
-      <VerdictSection project={project} />
+      <DiscoveryPanes project={project} />
       {response === undefined ? (
         <LoadingState />
       ) : (
