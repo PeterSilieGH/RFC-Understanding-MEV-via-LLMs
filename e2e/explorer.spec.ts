@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { EXPLORER_API, EXPLORER_WEB, anySwapTxHash, latestInspectedBlock } from "./helpers.js";
+import {
+  EXPLORER_API,
+  EXPLORER_WEB,
+  anyArbitrageurAddress,
+  anySwapTxHash,
+  latestInspectedBlock,
+} from "./helpers.js";
 
 test.describe("explorer-api", () => {
   test("mempool status responds", async ({ request }) => {
@@ -212,11 +218,11 @@ test.describe("explorer-web", () => {
     await page.goto(EXPLORER_WEB);
     await expect(page).toHaveTitle("MEV Block Explorer");
     // X5/X8: the h1/#currentBlock caption is gone; the header now carries the
-    // Block/Address search group
+    // Block/Address search group. The prev/next block buttons were removed.
     await expect(page.locator("#searchInput")).toBeVisible();
     await expect(page.locator("#modeToggle")).toBeVisible();
-    await expect(page.locator("#prevBtn")).toBeVisible();
-    await expect(page.locator("#nextBtn")).toBeVisible();
+    await expect(page.locator("#prevBtn")).toHaveCount(0);
+    await expect(page.locator("#nextBtn")).toHaveCount(0);
     await expect(page.locator("#liveToggleBtn")).toBeVisible();
   });
 
@@ -289,20 +295,28 @@ test.describe("explorer-web", () => {
     await blockResponse;
     await expect(page.locator("#liveToggleBtn")).not.toHaveClass(/active/);
 
-    // flip to address mode: placeholder + label change, and a search reveals the
-    // Address-lookup tab and runs the same query
+    // flip to address mode: placeholder + label change, and a search renders the
+    // address's transactions in the same #result table (with a Block column),
+    // not a separate bottom-bar panel (which was removed)
     await page.locator("#modeToggle").click();
     await expect(page.locator("#modeToggle")).toHaveText("Address");
     await expect(page.locator("#searchInput")).toHaveAttribute("placeholder", /0x/);
-    const zero = "0x0000000000000000000000000000000000000000";
+    await expect(page.locator("#panel-address")).toHaveCount(0);
+
+    // an address known to have MEV activity in the inspected corpus
+    const actor = anyArbitrageurAddress();
+    test.skip(actor === null, "no arbitrageur addresses in the shared postgres");
     const addrResponse = page.waitForResponse(
-      (res) => res.url().includes(`/api/address/${zero}`) && res.ok(),
+      (res) => res.url().includes(`/api/address/${actor}`) && res.ok(),
     );
-    await page.locator("#searchInput").fill(zero);
+    await page.locator("#searchInput").fill(actor!);
     await page.locator("#searchGoBtn").click();
     await addrResponse;
-    await expect(page.locator("#panel-address")).toBeVisible();
-    await expect(page.locator("#addressInput")).toHaveValue(zero);
+
+    // the result table gains a Block column and rows link to their block
+    await expect(page.locator("#result table thead")).toContainText("Block");
+    await expect(page.locator("#result a.block-link").first()).toBeVisible();
+    await expect(page.locator("#result tbody tr[data-tx]").first()).toBeVisible();
   });
 
   test("stats bar, income tab, MEV-only filter, toast under header (E2-E5)", async ({ page }) => {
@@ -326,12 +340,20 @@ test.describe("explorer-web", () => {
     await expect(page.locator("#stats .stat-card.accent-blue")).toHaveCount(3);
     await expect(page.locator("#stats")).not.toContainText(/fees|tips|bid/i);
 
-    // E5 (amended): the income chart is a bottom-bar tab next to the
-    // 1-block mempool tab, with the builder identity in its legend
+    // E5 (amended): the income chart is a bottom-bar tab ("Transaction Prices")
+    // next to the visibility tab, with the builder identity in its legend and
+    // the price-per-gas cards moved in beside the chart
     await page.locator(".explore-tab[data-tab=income]").click();
     await expect(page.locator("#panel-income")).toBeVisible();
     expect(await page.locator("#incomeChart rect").count()).toBeGreaterThanOrEqual(2);
     await expect(page.locator("#incomeLegend .legend-builder")).toContainText("Builder:");
+    // price-per-gas relocated here from Transaction Visibility
+    await expect(page.locator("#pricePerGas")).toContainText(/price per gas — public/i);
+    await expect(page.locator("#pricePerGas")).toContainText(/price per gas — private/i);
+    // Transaction Visibility no longer shows the price-per-gas summary cards
+    // (its intro paragraph still explains the concept — scope to the cards)
+    await page.locator(".explore-tab[data-tab=mempool]").click();
+    await expect(page.locator("#mempoolStatsResults")).not.toContainText(/price per gas/i);
 
     // E2: the icon toggle filters the table to MEV-only rows
     const rows = page.locator("#result tbody tr:not(.detail-row)");
@@ -362,10 +384,11 @@ test.describe("explorer-web", () => {
     await page.goto(`${EXPLORER_WEB}/?block=${block}`);
     await blockResponse;
 
-    // mempool is the leftmost tab and the default panel, scoped to the
-    // loaded block
+    // Transaction Visibility is the leftmost tab and the default panel, scoped
+    // to the loaded block
     const tabs = page.locator(".explore-tab");
-    await expect(tabs.first()).toHaveText(/mempool/i);
+    await expect(tabs.first()).toHaveText("Transaction Visibility");
+    await expect(tabs.first()).toHaveAttribute("data-tab", "mempool");
     await expect(tabs.first()).toHaveClass(/active/);
     await expect(page.locator("#panel-mempool")).toBeVisible();
     await expect(page.locator("#mempoolStatsResults")).toContainText(`#${block}`);
@@ -373,16 +396,18 @@ test.describe("explorer-web", () => {
     const txCount = await page.locator("#result tbody tr:not(.detail-row)").count();
     await expect(page.locator("#mempoolStatsResults .mp-cell")).toHaveCount(txCount);
 
-    // income sits directly right of mempool; the spacer pushes the
-    // multi-block tabs to the right edge
-    await expect(tabs.nth(1)).toHaveText(/income/i);
-    const [mempoolBox, addressBox, spacer] = await Promise.all([
+    // Transaction Prices sits directly right of it; the spacer pushes the
+    // multi-block tabs (leaderboard first, the address panel having been removed)
+    // to the right edge
+    await expect(tabs.nth(1)).toHaveText("Transaction Prices");
+    await expect(page.locator(".explore-tab[data-tab=address]")).toHaveCount(0);
+    const [mempoolBox, leaderboardBox, spacer] = await Promise.all([
       tabs.first().boundingBox(),
-      page.locator(".explore-tab[data-tab=address]").boundingBox(),
+      page.locator(".explore-tab[data-tab=leaderboard]").boundingBox(),
       page.locator(".explore-tabs-spacer").boundingBox(),
     ]);
     expect(spacer!.width).toBeGreaterThan(50);
-    expect(addressBox!.x).toBeGreaterThan(mempoolBox!.x + mempoolBox!.width + spacer!.width);
+    expect(leaderboardBox!.x).toBeGreaterThan(mempoolBox!.x + mempoolBox!.width + spacer!.width);
 
     // the Wiki tab (rightmost) shows the MEV-type legend
     await page.locator(".explore-tab[data-tab=wiki]").click();

@@ -32,7 +32,15 @@ export class ABIDecoder {
 
     let decoded: ReadonlyArray<unknown>;
     try {
-      decoded = this.iface.decodeFunctionData(fragment, data);
+      // ethers v6 does not eagerly throw for an element it can't decode (a
+      // dynamic type whose offset/length points outside the calldata — often
+      // from a 4-byte selector collision or truncated calldata). It stashes a
+      // "deferred error" in the Result that only throws when that element is
+      // read. `toArray(true)` forces the whole Result (recursively) to
+      // materialize *here*, inside the catch, so an undecodable input returns
+      // null instead of throwing later at `decoded[0]` and crashing the
+      // pipeline (mirrors Python's InsufficientDataBytes catch).
+      decoded = this.iface.decodeFunctionData(fragment, data).toArray(true);
     } catch {
       return null;
     }

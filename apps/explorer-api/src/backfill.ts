@@ -154,7 +154,11 @@ export interface FillStatus {
 }
 
 const CONFIRMATIONS = 2; // stay a couple blocks behind head for reorg safety
-const FILL_PAUSE_MS = 250;
+// Breathing room between blocks. Kept minimal (50ms) so spare capacity after
+// the head is spent walking the floor — inspection stays strictly serial
+// (concurrency 1 via backgroundInspect) and the error cooldown is untouched, so
+// the connection-cap safeguard is intact; only the success-path pause shrank.
+const FILL_PAUSE_MS = 50;
 const FILL_ERROR_COOLDOWN_MS = 5_000;
 const FILL_IDLE_MS = 12_000; // caught up — wait ~one block time for the chain
 const SCAN_WINDOW = 10_000; // gap-scan look-ahead per query (bounded, indexed)

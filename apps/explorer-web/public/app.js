@@ -1,6 +1,4 @@
 const themeToggle = document.getElementById("themeToggle");
-const prevBtn = document.getElementById("prevBtn");
-const nextBtn = document.getElementById("nextBtn");
 const modeToggle = document.getElementById("modeToggle");
 const searchInput = document.getElementById("searchInput");
 const searchGoBtn = document.getElementById("searchGoBtn");
@@ -18,6 +16,7 @@ const rpcText = document.getElementById("rpcText");
 const tickerEl = document.getElementById("ticker");
 const incomeChartEl = document.getElementById("incomeChart");
 const incomeLegendEl = document.getElementById("incomeLegend");
+const pricePerGasEl = document.getElementById("pricePerGas");
 const timelineEl = document.getElementById("timeline");
 const timelineTrackEl = document.getElementById("timelineTrack");
 const timelineGraphEl = document.getElementById("timelineGraph");
@@ -25,9 +24,6 @@ const timelineIntervalEl = document.getElementById("timelineInterval");
 const timelineLegendEl = document.getElementById("timelineLegend");
 const timelineStartEl = document.getElementById("timelineStart");
 const timelineEndEl = document.getElementById("timelineEnd");
-const addressInput = document.getElementById("addressInput");
-const addressSearchBtn = document.getElementById("addressSearchBtn");
-const addressResultsEl = document.getElementById("addressResults");
 const leaderboardResultsEl = document.getElementById("leaderboardResults");
 const heatmapResultsEl = document.getElementById("heatmapResults");
 const builderResultsEl = document.getElementById("builderResults");
@@ -192,6 +188,9 @@ let state = {
   valueBucketSize: 1, // blocks per value-series bucket
   valueMax: 0, // max ETH across all series (graph scale)
   mode: "block", // "block" | "address" — header search mode (X8)
+  view: "block", // "block" | "address" — what the #result table currently shows
+  addressTransactions: [], // synthetic tx rows for an address search result
+  addressQuery: null, // the address currently shown in the result table
 };
 
 const WETH_ADDRESS = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
@@ -409,7 +408,12 @@ function drawValueGraph() {
   const buckets = state.valueSeries;
   const max = state.valueMax || 0;
   const half = (state.valueBucketSize || 1) / 2;
-  const yFor = (v) => (max > 0 ? GRAPH_H - 4 - (v / max) * (GRAPH_H - 12) : GRAPH_H - 4);
+  // Log scale: extracted value spans several orders of magnitude across buckets,
+  // so a linear axis flattens everything but the peaks. log1p keeps zero-value
+  // buckets pinned to the baseline (log1p(0) === 0) without a special case.
+  const logMax = Math.log1p(max);
+  const yFor = (v) =>
+    logMax > 0 ? GRAPH_H - 4 - (Math.log1p(Math.max(0, v)) / logMax) * (GRAPH_H - 12) : GRAPH_H - 4;
 
   const polylines = VALUE_SERIES.map((s) => {
     if (buckets.length === 0) return "";
@@ -424,7 +428,7 @@ function drawValueGraph() {
   timelineLegendEl.innerHTML = VALUE_SERIES.map(
     (s) =>
       `<span class="tl-legend-item"><span class="legend-swatch" style="background:${s.color}"></span>${s.label}</span>`,
-  ).join("") + `<span class="tl-legend-unit">value extracted (${ethUnit()})${max > 0 ? ` · peak ${fmtEth(max, 2)}` : ""}</span>`;
+  ).join("") + `<span class="tl-legend-unit">value extracted (${ethUnit()}, log scale)${max > 0 ? ` · peak ${fmtEth(max, 2)}` : ""}</span>`;
 }
 
 function renderTimeline() {
@@ -820,6 +824,43 @@ function renderIncomeChart(transactions, bid) {
       Fee recipient: ${addrLink(state.builder?.feeRecipient)}
     </div>
   `;
+
+  renderPricePerGas(transactions);
+}
+
+// Effective price paid per gas by public vs private order flow, plus the
+// private premium — moved here from Transaction Visibility so all the
+// price/gas figures live together on the Transaction Prices tab.
+function renderPricePerGas(transactions) {
+  if (!pricePerGasEl) return;
+  const publicTxs = transactions.filter((tx) => tx.mempool?.status === "public");
+  const privateTxs = transactions.filter((tx) => tx.mempool?.status === "private");
+  const avgTipPublicGwei = mpEffectiveGwei(publicTxs);
+  const avgTipPrivateGwei = mpEffectiveGwei(privateTxs);
+  const premiumPct = mpPrivatePremiumPct({ avgTipPublicGwei, avgTipPrivateGwei });
+  const fmtGwei = (v) => (v != null ? `${v.toFixed(2)} gwei` : "n/a");
+
+  const cards = [
+    { value: fmtGwei(avgTipPublicGwei), label: "price per gas — public" },
+    { value: fmtGwei(avgTipPrivateGwei), label: "price per gas — private" },
+  ];
+  if (premiumPct != null) {
+    cards.push({
+      value: fmtPct(premiumPct),
+      label: "private premium vs public",
+      cls: premiumPct >= 0 ? "profit" : "loss",
+    });
+  }
+
+  pricePerGasEl.innerHTML = cards
+    .map(
+      (c) => `
+      <div class="ppg-card">
+        <div class="ppg-value ${c.cls || ""}">${c.value}</div>
+        <div class="ppg-label">${c.label}</div>
+      </div>`,
+    )
+    .join("");
 }
 
 function renderMevDetail(m) {
@@ -1028,40 +1069,45 @@ function renderSwapChips(swaps) {
     .join("");
 }
 
-function renderTable() {
-  const visible = state.onlyMev
-    ? state.transactions.filter((t) => t.mev.length > 0)
-    : state.transactions;
+function mevBadgesHtml(tx) {
+  return tx.mev.length
+    ? tx.mev
+        .map((m) => {
+          const info = MEV_INFO[m.type] || { label: m.type, short: "" };
+          const amount = m.profit || m.received;
+          const profitText = amount
+            ? ` <span class="${amount.value < 0 ? "loss" : "profit"}">${fmtAmount(amount)}</span>`
+            : "";
+          return `<span class="badge ${m.type}" title="${info.short}">${info.label}</span>${profitText}`;
+        })
+        .join("")
+    : `<span class="badge none">no attacks detected</span>`;
+}
 
-  if (visible.length === 0) {
-    resultEl.innerHTML = `<div class="empty-state">No transactions match the current filter.</div>`;
+// Shared transaction-table renderer used by both the block view and the address
+// search result, so an address's transactions show in the same space and format
+// as a block's. `showBlock` prepends a Block column (address results span
+// blocks); block-scoped cells (from/to/gas/mempool) fall back to "–" for the
+// synthetic address rows that don't carry them.
+function renderResultTable(txs, { showBlock = false, emptyMsg, rerender } = {}) {
+  if (txs.length === 0) {
+    resultEl.innerHTML = `<div class="empty-state">${emptyMsg || "No transactions match the current filter."}</div>`;
     return;
   }
 
+  const colspan = showBlock ? 9 : 8;
+
   // one trace link per incident: the first rendered leg carries it
   const incidentLinkCarrier = new Map();
-  for (const tx of visible) {
+  for (const tx of txs) {
     const legs = incidentLegs(tx);
     if (legs.length > 1 && !incidentLinkCarrier.has(legs[0])) {
       incidentLinkCarrier.set(legs[0], tx.hash);
     }
   }
 
-  const rows = visible
+  const rows = txs
     .map((tx) => {
-      const badges = tx.mev.length
-        ? tx.mev
-            .map((m) => {
-              const info = MEV_INFO[m.type] || { label: m.type, short: "" };
-              const amount = m.profit || m.received;
-              const profitText = amount
-                ? ` <span class="${amount.value < 0 ? "loss" : "profit"}">${fmtAmount(amount)}</span>`
-                : "";
-              return `<span class="badge ${m.type}" title="${info.short}">${info.label}</span>${profitText}`;
-            })
-            .join("")
-        : `<span class="badge none">no attacks detected</span>`;
-
       const legs = incidentLegs(tx);
       const traceLinkHtml =
         legs.length === 1
@@ -1076,7 +1122,7 @@ function renderTable() {
       const detailHtml = hasDetail
         ? `
           <tr class="detail-row ${isExpanded ? "" : "hidden"}" data-detail-for="${tx.hash}">
-            <td colspan="8">
+            <td colspan="${colspan}">
               ${tx.mev.map(renderMevDetail).join("")}
               ${
                 tx.swaps.length
@@ -1087,8 +1133,13 @@ function renderTable() {
           </tr>`
         : "";
 
+      const blockCell = showBlock
+        ? `<td class="mono"><a class="block-link" data-block="${tx.blockNumber}" title="Load block ${tx.blockNumber}">#${tx.blockNumber}</a></td>`
+        : "";
+
       return `
         <tr class="${tx.mev.length ? "has-mev" : ""} ${isExpanded ? "expanded" : ""}" data-tx="${tx.hash}" data-has-detail="${hasDetail}">
+          ${blockCell}
           <td class="mono">${hasDetail ? '<span class="expand-arrow">▶</span>' : ""}<a class="addr" href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${shortHash(tx.hash)}</a> ${traceLinkHtml}</td>
           <td class="mono">${addrLink(tx.from)}</td>
           <td class="mono">${addrLink(tx.to)}</td>
@@ -1096,7 +1147,7 @@ function renderTable() {
           <td class="mono">${tx.gasPriceGwei ? tx.gasPriceGwei.toFixed(2) : "–"}</td>
           <td class="mono">${tx.coinbaseTransferEth ? fmtEth(tx.coinbaseTransferEth, 5) : "0"}</td>
           <td>${renderMempoolBadge(tx.mempool)}</td>
-          <td>${badges}</td>
+          <td>${mevBadgesHtml(tx)}</td>
         </tr>
         ${detailHtml}
       `;
@@ -1107,6 +1158,7 @@ function renderTable() {
     <table>
       <thead>
         <tr>
+          ${showBlock ? "<th>Block</th>" : ""}
           <th>Tx Hash</th>
           <th>From</th>
           <th>To</th>
@@ -1121,19 +1173,42 @@ function renderTable() {
     </table>
   `;
 
+  resultEl.querySelectorAll("a.block-link").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      loadBlock(Number(el.dataset.block));
+    });
+  });
+
   resultEl.querySelectorAll("tr[data-tx]").forEach((row) => {
     if (row.dataset.hasDetail !== "true") return;
     row.addEventListener("click", () => {
       const hash = row.dataset.tx;
       if (state.expanded.has(hash)) state.expanded.delete(hash);
       else state.expanded.add(hash);
-      renderTable();
+      (rerender || renderTable)();
     });
   });
 }
 
+function renderTable() {
+  const visible = state.onlyMev
+    ? state.transactions.filter((t) => t.mev.length > 0)
+    : state.transactions;
+  renderResultTable(visible, { showBlock: false });
+}
+
+// Dispatcher: the #result table is shared between the block view and the
+// address-search view, so re-renders (currency/filter toggles, expand) must
+// target whichever is active.
+function rerenderResult() {
+  if (state.view === "address") renderAddressTable();
+  else renderTable();
+}
+
 async function loadBlock(blockNumber, { silent = false } = {}) {
   if (!silent) setLoading(true, `Inspecting block ${blockNumber}…`);
+  state.view = "block";
 
   try {
     const res = await fetch(`/api/block/${blockNumber}`);
@@ -1224,13 +1299,6 @@ async function pollRpcStatus() {
   }
 }
 
-prevBtn.addEventListener("click", () => {
-  if (state.blockNumber != null) loadBlock(state.blockNumber - 1);
-});
-nextBtn.addEventListener("click", () => {
-  if (state.blockNumber != null) loadBlock(state.blockNumber + 1);
-});
-
 // X8: unified header search with a Block/Address mode toggle. In block mode the
 // box loads a block above (replacing the removed #block-number field, X5); in
 // address mode it runs the same lookup as the Address-lookup tab and reveals
@@ -1260,11 +1328,11 @@ function runHeaderSearch() {
       showToast("Enter a valid 0x… address.", "error");
       return;
     }
-    // route through the Address-lookup tab so the result renders in one place
-    addressInput.value = query;
-    activateTab("address");
-    addressResultsEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    searchAddress();
+    // the address lookup no longer lives in a bottom-bar panel — its
+    // transactions render in the main result table, same space and format as a
+    // block's transactions
+    setLive(false);
+    searchAddress(query);
   }
 }
 
@@ -1310,12 +1378,14 @@ liveToggleBtn.addEventListener("click", () => {
 onlyMevToggle.addEventListener("click", () => {
   state.onlyMev = !state.onlyMev;
   onlyMevToggle.classList.toggle("active", state.onlyMev);
-  renderTable();
+  rerenderResult();
 });
 
 function collectTokenAddresses() {
   const addresses = new Set([WETH_ADDRESS]);
-  for (const tx of state.transactions) {
+  const source =
+    state.view === "address" ? state.addressTransactions : state.transactions;
+  for (const tx of source) {
     for (const swap of tx.swaps) {
       if (swap.tokenIn?.tokenAddress) addresses.add(swap.tokenIn.tokenAddress.toLowerCase());
       if (swap.tokenOut?.tokenAddress) addresses.add(swap.tokenOut.tokenAddress.toLowerCase());
@@ -1343,7 +1413,7 @@ async function refreshEurPrices() {
 function rerenderAfterCurrencyChange() {
   renderStats(state.transactions);
   if (state.blockNumber != null) renderIncomeChart(state.transactions, state.bid);
-  renderTable();
+  rerenderResult();
 }
 
 eurToggle.addEventListener("click", async () => {
@@ -1357,51 +1427,112 @@ eurToggle.addEventListener("click", async () => {
   rerenderAfterCurrencyChange();
 });
 
-const ACTIVITY_LABELS = {
-  arbitrage: "Arbitrage",
-  sandwich: "Sandwich (as attacker)",
-  liquidation_performed: "Liquidation performed",
-  liquidation_suffered: "Liquidation suffered",
-  nft_trade: "NFT trade",
-};
-
-function renderAddressResults(address, items) {
-  if (items.length === 0) {
-    addressResultsEl.innerHTML = `<div class="empty-state">No MEV activity found for this address in any inspected block yet. Note: only blocks this explorer has actually inspected are searchable — try inspecting more blocks first.</div>`;
-    return;
+// Map one address-activity item (per MEV action, cross-block) onto the same
+// `mev[]` entry shape the block-transaction table renders, so an address's
+// transactions show in the same format. The searched address plays the actor
+// role (arbitrageur / sandwicher / liquidator / trader).
+function activityItemToMev(item, address) {
+  switch (item.type) {
+    case "arbitrage":
+      return {
+        type: "arbitrage",
+        accountAddress: address,
+        profit: item.profit,
+        protocols: item.protocols || [],
+        error: item.error,
+      };
+    case "sandwich":
+      return { type: "sandwich_frontrun", sandwicherAddress: address, profit: item.profit };
+    case "liquidation_performed":
+      return {
+        type: "liquidation",
+        protocol: item.protocol,
+        liquidatorUser: address,
+        liquidatedUser: null,
+        received: item.profit,
+      };
+    case "liquidation_suffered":
+      return {
+        type: "liquidation",
+        protocol: item.protocol,
+        liquidatedUser: address,
+        liquidatorUser: null,
+      };
+    case "nft_trade":
+      return {
+        type: "nft_trade",
+        protocol: item.protocol,
+        buyerAddress: item.role === "buyer" ? address : null,
+        sellerAddress: item.role === "seller" ? address : null,
+        payment: item.payment,
+      };
+    default:
+      return { type: item.type };
   }
-
-  addressResultsEl.innerHTML = items
-    .map((item) => {
-      const amount = item.profit || item.payment;
-      const amountHtml = amount ? profitSpan(amount) : "";
-      return `
-        <div class="activity-row">
-          <span class="badge ${item.type === "sandwich" ? "sandwich_frontrun" : item.type === "arbitrage" ? "arbitrage" : item.type.startsWith("liquidation") ? "liquidation" : "nft_trade"}">${ACTIVITY_LABELS[item.type] || item.type}</span>
-          <span>Block ${item.blockNumber}</span>
-          ${txLink(item.transactionHash)}
-          ${amountHtml}
-          ${item.protocol ? `<span class="mono">${item.protocol}</span>` : ""}
-        </div>
-      `;
-    })
-    .join("");
 }
 
-async function searchAddress() {
-  const address = addressInput.value.trim();
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+// Group cross-block activity items into synthetic transaction rows. Block-scoped
+// fields the address query can't provide (from/to/gas/mempool) stay null and
+// render as "–" — the table is otherwise identical to the block view.
+function addressItemsToTransactions(items, address) {
+  const byHash = new Map();
+  for (const item of items) {
+    const hash = item.transactionHash;
+    if (!hash) continue;
+    let tx = byHash.get(hash);
+    if (!tx) {
+      tx = {
+        hash,
+        blockNumber: item.blockNumber,
+        from: null,
+        to: null,
+        gasUsed: null,
+        gasPriceGwei: null,
+        coinbaseTransferEth: null,
+        mempool: null,
+        swaps: [],
+        mev: [],
+      };
+      byHash.set(hash, tx);
+    }
+    tx.mev.push(activityItemToMev(item, address));
+  }
+  return [...byHash.values()].sort((a, b) => b.blockNumber - a.blockNumber);
+}
+
+function renderAddressTable() {
+  renderResultTable(state.addressTransactions, {
+    showBlock: true,
+    rerender: renderAddressTable,
+    emptyMsg: `No MEV activity found for ${shortAddr(state.addressQuery)} in any inspected block yet. Only blocks this explorer has actually inspected are searchable.`,
+  });
+}
+
+async function searchAddress(address) {
+  const addr = (address || "").trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) {
     showToast("Enter a valid 0x… address.", "error");
     return;
   }
-  addressResultsEl.innerHTML = `<div class="empty-state">Searching…</div>`;
+  state.view = "address";
+  state.addressQuery = addr;
+  state.expanded.clear();
+  setLoading(true, `Searching MEV activity for ${shortAddr(addr)}…`);
   try {
-    const res = await fetch(`/api/address/${address}`);
+    const res = await fetch(`/api/address/${addr}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Search failed");
-    renderAddressResults(address, data.items);
+    state.addressTransactions = addressItemsToTransactions(data.items, addr);
+    await refreshEurPrices();
+    renderAddressTable();
+    showToast(
+      `${state.addressTransactions.length} transaction${state.addressTransactions.length === 1 ? "" : "s"} with MEV for ${shortAddr(addr)}.`,
+      "success",
+    );
   } catch (err) {
     showToast(`Error: ${err.message}`, "error");
+  } finally {
+    setLoading(false);
   }
 }
 
@@ -1664,27 +1795,15 @@ function renderMempoolBlock() {
     return;
   }
 
-  const avgTipPublicGwei = mpEffectiveGwei(publicTxs);
-  const avgTipPrivateGwei = mpEffectiveGwei(privateTxs);
-  const premiumPct = mpPrivatePremiumPct({ avgTipPublicGwei, avgTipPrivateGwei });
-  const fmtGwei = (v) => (v != null ? `${v.toFixed(2)} gwei` : "n/a");
-
+  // price-per-gas + private premium moved to the Transaction Prices tab
+  // (renderPricePerGas); this tab keeps the visibility breakdown.
   const cards = [
     { value: `${tracked} of ${txs.length}`, label: `tx with a mempool verdict (#${state.blockNumber})` },
     {
       value: tracked > 0 ? `${((privateTxs.length / tracked) * 100).toFixed(1)}%` : "n/a",
       label: `private share (${privateTxs.length} of ${tracked} tracked)`,
     },
-    { value: fmtGwei(avgTipPublicGwei), label: "price per gas — public" },
-    { value: fmtGwei(avgTipPrivateGwei), label: "price per gas — private" },
   ];
-  if (premiumPct != null) {
-    cards.push({
-      value: fmtPct(premiumPct),
-      label: "private premium vs public",
-      cls: premiumPct >= 0 ? "profit" : "loss",
-    });
-  }
 
   const summaryHtml = cards
     .map(
@@ -1753,11 +1872,6 @@ function activateTab(name) {
 }
 document.querySelectorAll(".explore-tab").forEach((tab) => {
   tab.addEventListener("click", () => activateTab(tab.dataset.tab));
-});
-
-addressSearchBtn.addEventListener("click", searchAddress);
-addressInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") searchAddress();
 });
 
 function applyTheme(theme) {

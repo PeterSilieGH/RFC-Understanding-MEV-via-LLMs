@@ -57,8 +57,12 @@ services:
     environment:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-      # Set true to continuously inspect new blocks as the chain advances.
-      INSPECTOR_FOLLOW_HEAD: ${INSPECTOR_FOLLOW_HEAD:-false}
+      # Continuously inspect new blocks as the chain advances (process the
+      # current/head block).
+      INSPECTOR_FOLLOW_HEAD: ${INSPECTOR_FOLLOW_HEAD:-true}
+      # Spend spare capacity after the head analyzing historical blocks from
+      # INSPECT_FLOOR_BLOCK (default 11,000,000) upward.
+      INSPECTOR_FILL_RANGE: ${INSPECTOR_FILL_RANGE:-true}
     depends_on:
       postgres:
         condition: service_healthy

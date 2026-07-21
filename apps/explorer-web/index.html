@@ -38,13 +38,6 @@
     </div>
   </header>
 
-  <section class="controls">
-    <div class="control-group">
-      <button id="prevBtn" class="icon-btn" title="Previous block">←</button>
-      <button id="nextBtn" class="icon-btn" title="Next block">→</button>
-    </div>
-  </section>
-
   <div id="toast" class="toast"></div>
 
   <!-- X9: value-over-time line graph from block 11,000,000 (arb/sandwich/
@@ -76,10 +69,9 @@
   <section class="explore">
     <!-- left group: 1-block analysis tabs; right group: multi-block + util tabs -->
     <div class="explore-tabs">
-      <button class="explore-tab active" data-tab="mempool">Mempool — this block</button>
-      <button class="explore-tab" data-tab="income">Income vs bid</button>
+      <button class="explore-tab active" data-tab="mempool">Transaction Visibility</button>
+      <button class="explore-tab" data-tab="income">Transaction Prices</button>
       <span class="explore-tabs-spacer"></span>
-      <button class="explore-tab" data-tab="address">Address lookup</button>
       <button class="explore-tab" data-tab="leaderboard">Leaderboard</button>
       <button class="explore-tab" data-tab="heatmap">Sandwiched pools</button>
       <button class="explore-tab" data-tab="builders">Builder &amp; relay share</button>
@@ -91,23 +83,22 @@
       <div id="mempoolStatsResults"></div>
     </div>
 
-    <!-- stat-visualization tab (E5, moved from the viz column) -->
+    <!-- Transaction Prices (X-amend): builder income vs bid, plus the
+         price-per-gas breakdown moved over from Transaction Visibility. Laid
+         out horizontally. -->
     <div class="explore-panel hidden" id="panel-income">
-      <p class="explore-hint">What the builder earned from the loaded block (priority fees plus direct coinbase tips, split by order-flow visibility) next to what it bid to win the slot. Bid green = income covers the bid; red = the builder overpaid.</p>
-      <div class="viz-card">
-        <div class="viz-title">Block income vs builder bid</div>
-        <svg id="incomeChart" viewBox="0 0 260 190" preserveAspectRatio="xMidYMid meet"></svg>
-        <div id="incomeLegend" class="viz-legend"></div>
+      <p class="explore-hint">What the builder earned from the loaded block (priority fees plus direct coinbase tips, split by order-flow visibility) next to what it bid to win the slot, and the effective price paid per gas by public vs private order flow. Bid green = income covers the bid; red = the builder overpaid.</p>
+      <div class="income-row">
+        <div class="viz-card">
+          <div class="viz-title">Block income vs builder bid</div>
+          <svg id="incomeChart" viewBox="0 0 260 190" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+        <div class="viz-card income-side">
+          <div class="viz-title">Price per gas</div>
+          <div id="pricePerGas" class="ppg-cards"></div>
+          <div id="incomeLegend" class="viz-legend"></div>
+        </div>
       </div>
-    </div>
-
-    <div class="explore-panel hidden" id="panel-address">
-      <p class="explore-hint">Search any address across every block this explorer has ever inspected (stored in Postgres) to see its full MEV history.</p>
-      <div class="control-group address-search">
-        <input id="addressInput" type="text" placeholder="0x…" />
-        <button id="addressSearchBtn" class="primary">Search</button>
-      </div>
-      <div id="addressResults"></div>
     </div>
 
     <div class="explore-panel hidden" id="panel-leaderboard">

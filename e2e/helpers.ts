@@ -29,6 +29,11 @@ export function anySwapTxHash(): string | null {
   return psql("SELECT transaction_hash FROM swaps ORDER BY block_number DESC LIMIT 1");
 }
 
+/** An address that has performed at least one arbitrage, or null. */
+export function anyArbitrageurAddress(): string | null {
+  return psql("SELECT account_address FROM arbitrages ORDER BY block_number DESC LIMIT 1");
+}
+
 /** The front-run leg of an inspected sandwich, or null. */
 export function anySandwichFrontrunTxHash(): string | null {
   return psql(
