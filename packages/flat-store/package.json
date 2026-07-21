@@ -1,0 +1,22 @@
+{
+  "name": "@mev/flat-store",
+  "version": "1.0.0",
+  "description": "Prototype: content-addressed store that deduplicates DiscoUI .flat sources across projects (keyed by flattening hash).",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "flat-store": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
