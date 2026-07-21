@@ -239,10 +239,10 @@ function fmtAmount(amount) {
 }
 
 // X4: the unit label shown for native-currency figures. In Ethereum (ETH)
-// mode we display "xhi"; the EUR toggle overrides it. Value math is unchanged —
-// this is purely the label.
+// mode we display "Ξ" (Greek capital Xi, the ETH symbol); the EUR toggle
+// overrides it. Value math is unchanged — this is purely the label.
 function ethUnit() {
-  return state.showEur ? "EUR" : "xhi";
+  return state.showEur ? "EUR" : "Ξ";
 }
 
 // The WETH→EUR rate we price everything else against; null until CoinGecko has
@@ -253,14 +253,14 @@ function wethEurPrice() {
 
 // Convert an ETH-denominated value into the currently displayed unit, returning
 // value AND unit together so the two can never disagree. EUR is only claimed
-// when the WETH price is actually known — otherwise we fall back to "xhi",
+// when the WETH price is actually known — otherwise we fall back to "Ξ" (ETH),
 // fixing the mismatch where the label said EUR but the number was still ETH.
 function displayValue(ethValue) {
   if (state.showEur) {
     const price = wethEurPrice();
     if (price != null) return { value: ethValue * price, unit: "EUR" };
   }
-  return { value: ethValue, unit: "xhi" };
+  return { value: ethValue, unit: "Ξ" };
 }
 
 // For plain ETH amounts that don't go through fmtAmount (gas/tip/fee
@@ -426,20 +426,39 @@ const GRAPH_H = 120;
 function drawValueGraph() {
   const buckets = state.valueSeries;
   const max = state.valueMax || 0;
-  const half = (state.valueBucketSize || 1) / 2;
+  const size = state.valueBucketSize || 1;
+  const half = size / 2;
   // Log scale: extracted value spans several orders of magnitude across buckets,
   // so a linear axis flattens everything but the peaks. log1p keeps zero-value
   // buckets pinned to the baseline (log1p(0) === 0) without a special case.
   const logMax = Math.log1p(max);
   const yFor = (v) =>
     logMax > 0 ? GRAPH_H - 4 - (Math.log1p(Math.max(0, v)) / logMax) * (GRAPH_H - 12) : GRAPH_H - 4;
+  const xFor = (bucket) => (blockToFrac(bucket + half) * GRAPH_W).toFixed(1);
 
+  // The server only returns buckets that contain inspected blocks, so any jump
+  // larger than one bucket is an un-inspected gap: break the line there instead
+  // of drawing a segment across blocks we never looked at. Contiguous runs
+  // become separate polylines; a lone inspected bucket gets a dot so it shows.
   const polylines = VALUE_SERIES.map((s) => {
-    if (buckets.length === 0) return "";
-    const pts = buckets
-      .map((b) => `${(blockToFrac(b.bucket + half) * GRAPH_W).toFixed(1)},${yFor(b[`${s.key}Eth`]).toFixed(1)}`)
-      .join(" ");
-    return `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="1.6" vector-effect="non-scaling-stroke" />`;
+    const segments = [];
+    let run = [];
+    for (let i = 0; i < buckets.length; i++) {
+      const b = buckets[i];
+      if (i > 0 && b.bucket - buckets[i - 1].bucket !== size) {
+        if (run.length) segments.push(run);
+        run = [];
+      }
+      run.push(`${xFor(b.bucket)},${yFor(b[`${s.key}Eth`]).toFixed(1)}`);
+    }
+    if (run.length) segments.push(run);
+    return segments
+      .map((pts) =>
+        pts.length === 1
+          ? `<circle cx="${pts[0].split(",")[0]}" cy="${pts[0].split(",")[1]}" r="1.6" fill="${s.color}" vector-effect="non-scaling-stroke" />`
+          : `<polyline points="${pts.join(" ")}" fill="none" stroke="${s.color}" stroke-width="1.6" vector-effect="non-scaling-stroke" />`,
+      )
+      .join("");
   }).join("");
 
   timelineGraphEl.innerHTML = `<line x1="0" y1="${GRAPH_H - 4}" x2="${GRAPH_W}" y2="${GRAPH_H - 4}" stroke="var(--border)" stroke-width="1" vector-effect="non-scaling-stroke"/>${polylines}`;

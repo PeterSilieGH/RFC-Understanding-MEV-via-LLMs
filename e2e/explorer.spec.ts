@@ -182,6 +182,7 @@ test.describe("explorer-api", () => {
     for (const b of body.buckets.slice(0, 5)) {
       for (const key of [
         "bucket",
+        "inspectedBlocks",
         "arbitrageEth",
         "sandwichEth",
         "liquidationEth",
@@ -192,6 +193,9 @@ test.describe("explorer-api", () => {
         expect(b).toHaveProperty(key);
       }
       expect(b.arbitrageEth).toBeGreaterThanOrEqual(0);
+      // every returned bucket contains at least one inspected block (gaps are
+      // omitted, not valued at 0)
+      expect(b.inspectedBlocks).toBeGreaterThan(0);
     }
   });
 
@@ -331,8 +335,8 @@ test.describe("explorer-web", () => {
     await page.goto(`${EXPLORER_WEB}/?block=${block}`);
     await blockResponse;
 
-    // X4: ETH figures are labelled "xhi" in the table header (EUR toggle off)
-    await expect(page.locator("#result thead")).toContainText("Builder Tip (xhi)");
+    // X4: ETH figures are labelled "Ξ" (Xi) in the table header (EUR toggle off)
+    await expect(page.locator("#result thead")).toContainText("Builder Tip (Ξ)");
 
     // E4 (amended): transactions first, then private, three blue MEV cards,
     // no fee/tip/bid cards
@@ -447,7 +451,7 @@ test.describe("explorer-web", () => {
 
     // amend: the peak moved from the legend to the y-axis; unit and value agree
     await expect(legend).not.toContainText(/peak/i);
-    await expect(page.locator("#timelineYAxis")).toContainText(/xhi|EUR/, { timeout: 15_000 });
+    await expect(page.locator("#timelineYAxis")).toContainText(/Ξ|EUR/, { timeout: 15_000 });
   });
 
   test("per-tx total P/L annotation, priced via CoinGecko (amend)", async ({ page }) => {
@@ -462,11 +466,11 @@ test.describe("explorer-web", () => {
     await priceResponse;
 
     // where every leg's token is priceable the Detected MEV cell shows a single
-    // signed total P/L (in "xhi" by default) instead of a per-token amount; the
+    // signed total P/L (in "Ξ" by default) instead of a per-token amount; the
     // EUR toggle re-denominates it. Soft: illiquid legs legitimately fall back.
     const pnl = page.locator("#result .pnl");
     if ((await pnl.count()) > 0) {
-      await expect(pnl.first()).toHaveText(/[+-][\d.]+ xhi/);
+      await expect(pnl.first()).toHaveText(/[+-][\d.]+ Ξ/);
       await page.locator("#eurToggle").click();
       await expect(pnl.first()).toHaveText(/[+-][\d.]+ (EUR|€)/);
     }

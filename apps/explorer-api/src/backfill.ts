@@ -283,6 +283,7 @@ const WETH_ADDRESS = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
 
 export interface MevValueBucket {
   bucket: number; // block number of the bucket's left edge
+  inspectedBlocks: number; // how many blocks in this bucket were actually inspected
   arbitrageEth: number;
   sandwichEth: number;
   liquidationEth: number;
@@ -320,36 +321,49 @@ export async function getMevValueSeries(
       [from, to, size, WETH_ADDRESS],
     );
 
-  const [arbs, sandwiches, liquidations] = await Promise.all([
+  // The bucket grid is seeded from the `blocks` table so a bucket only exists
+  // when at least one of its blocks was actually inspected. Un-inspected spans
+  // therefore produce NO bucket at all (a gap), rather than a bucket valued at
+  // 0 — the timeline must not imply "we looked and found nothing" where we
+  // never looked. An inspected bucket with no MEV legitimately stays at 0.
+  const inspected = pool.query(
+    `SELECT (block_number / $3)::bigint * $3 AS bucket, COUNT(*) AS n
+     FROM blocks WHERE block_number BETWEEN $1 AND $2
+     GROUP BY bucket`,
+    [from, to, size],
+  );
+
+  const [blocksAgg, arbs, sandwiches, liquidations] = await Promise.all([
+    inspected,
     agg("arbitrages", "profit_amount", "profit_token_address"),
     agg("sandwiches", "profit_amount", "profit_token_address"),
     agg("liquidations", "received_amount", "received_token_address"),
   ]);
 
   const byBucket = new Map<number, MevValueBucket>();
-  const slot = (bucket: number): MevValueBucket => {
-    let b = byBucket.get(bucket);
-    if (!b) {
-      b = {
-        bucket,
-        arbitrageEth: 0,
-        sandwichEth: 0,
-        liquidationEth: 0,
-        arbitrageCount: 0,
-        sandwichCount: 0,
-        liquidationCount: 0,
-      };
-      byBucket.set(bucket, b);
-    }
-    return b;
-  };
+  for (const row of blocksAgg.rows) {
+    const bucket = Number(row.bucket);
+    byBucket.set(bucket, {
+      bucket,
+      inspectedBlocks: Number(row.n),
+      arbitrageEth: 0,
+      sandwichEth: 0,
+      liquidationEth: 0,
+      arbitrageCount: 0,
+      sandwichCount: 0,
+      liquidationCount: 0,
+    });
+  }
+  // MEV only folds into inspected buckets (any block with a detected MEV row is
+  // by definition inspected, so its bucket already exists; guard defensively).
   const fold = (
     rows: { bucket: unknown; n: unknown; wei: unknown }[],
     ethKey: "arbitrageEth" | "sandwichEth" | "liquidationEth",
     countKey: "arbitrageCount" | "sandwichCount" | "liquidationCount",
   ) => {
     for (const row of rows) {
-      const b = slot(Number(row.bucket));
+      const b = byBucket.get(Number(row.bucket));
+      if (!b) continue;
       b[ethKey] += Number(row.wei) / 1e18;
       b[countKey] += Number(row.n);
     }
