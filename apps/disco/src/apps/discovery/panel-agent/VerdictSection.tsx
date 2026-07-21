@@ -29,7 +29,7 @@ export function VerdictSection(props: { project: string }) {
   const [queued, setQueued] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const model = useAgentModelStore((s) => s.selected)
+  const model = useAgentModelStore((s) => s.incidentModel)
   const setImportant = useAgentMarksStore((s) => s.setImportant)
 
   const stored = useQuery({

@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { Checkbox } from '../../../components/Checkbox'
 import { Dialog } from '../../../components/Dialog'
 import { IconGear } from '../../../icons/IconGear'
+import { useAgentModelStore } from '../panel-agent/model-store'
 import { useGlobalSettingsStore } from '../store/global-settings-store'
+import { AgentModelSelect } from './ModelSelect'
 
 const MAX_DEPTH_LIMIT = 100
 
@@ -12,6 +14,13 @@ export function SettingsDialog() {
   )
   const maxReachableDepth = useGlobalSettingsStore((s) => s.maxReachableDepth)
   const setUserSettings = useGlobalSettingsStore((s) => s.setUserSettings)
+
+  // DIVERGENCE(mev): agent model selection lives here now (moved from the top
+  // bar), split into one model for Analyze and one for Incident reporting.
+  const analyzeModel = useAgentModelStore((s) => s.analyzeModel)
+  const incidentModel = useAgentModelStore((s) => s.incidentModel)
+  const setAnalyzeModel = useAgentModelStore((s) => s.setAnalyzeModel)
+  const setIncidentModel = useAgentModelStore((s) => s.setIncidentModel)
 
   return (
     <Dialog.Root>
@@ -54,6 +63,27 @@ export function SettingsDialog() {
             value={maxReachableDepth}
             onChange={(v) => setUserSettings({ maxReachableDepth: v })}
           />
+
+          <h2 className="mt-4 leading-none">Agent models</h2>
+          <hr className="mt-1 mb-2 border-coffee-400/30" />
+          <div className="flex flex-col gap-2">
+            <AgentModelSelect
+              label="Analyze"
+              title="Model used by the Analyze panel (code / value review)"
+              value={analyzeModel}
+              onChange={setAnalyzeModel}
+            />
+            <AgentModelSelect
+              label="Incident reporting"
+              title="Model used to build the incident verdict and its follow-up chat"
+              value={incidentModel}
+              onChange={setIncidentModel}
+            />
+            <div className="font-light text-coffee-400 text-xs">
+              Models come from agent-api (those with a working credential in the
+              pi agent dir). Each defaults to the agent-api setting.
+            </div>
+          </div>
         </div>
       </Dialog.Body>
     </Dialog.Root>

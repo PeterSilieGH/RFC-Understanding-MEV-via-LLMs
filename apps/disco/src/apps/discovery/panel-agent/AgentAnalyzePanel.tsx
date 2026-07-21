@@ -142,7 +142,7 @@ function AnalyzeRunner(props: {
   const [run, setRun] = useState<RunState>(IDLE)
   const abortRef = useRef<AbortController | null>(null)
   const addMarks = useAgentMarksStore((s) => s.addMarks)
-  const model = useAgentModelStore((s) => s.selected)
+  const model = useAgentModelStore((s) => s.analyzeModel)
 
   const targets = useQuery({
     queryKey: ['agent-targets', project, [...addresses].sort().join(',')],

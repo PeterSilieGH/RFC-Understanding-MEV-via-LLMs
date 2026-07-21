@@ -382,6 +382,23 @@ button.ghost {
   width: 100%;
   height: 100%;
 }
+/* log-scale y-axis annotation overlaid on the graph (peak at top, 0 at base);
+   an HTML overlay, not SVG text, so the non-uniform SVG scale can't distort it */
+.timeline-yaxis {
+  position: absolute;
+  top: 0;
+  left: 4px;
+  bottom: 2px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  z-index: 1;
+}
+.tl-yaxis-peak { color: var(--text); background: color-mix(in srgb, var(--panel) 70%, transparent); padding: 0 2px; border-radius: 2px; }
+.tl-yaxis-zero { color: var(--muted); }
 .timeline-interval {
   position: absolute;
   top: -3px;
@@ -487,6 +504,21 @@ a.trace-link:hover { color: var(--blue); border-color: var(--blue); }
   margin-left: 2px;
   cursor: help;
 }
+
+/* total P/L chip under Detected MEV (X-amend) */
+.pnl {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+}
+.pnl.profit { color: var(--green); }
+.pnl.loss { color: var(--red); }
+
+/* incident highlight: hovering a trace button lights up related legs' rows
+   and their "↳ incident" markers so you can see which txs belong together */
+tr.incident-hi { background: var(--row-mev-hover-bg); box-shadow: inset 3px 0 0 var(--blue); }
+.trace-link-ref.incident-hi,
+a.trace-link.incident-hi { color: var(--blue); border-color: var(--blue); opacity: 1; }
 
 .expand-arrow { display: inline-block; color: var(--muted); margin-right: 6px; }
 tr.expanded .expand-arrow { transform: rotate(90deg); display: inline-block; }

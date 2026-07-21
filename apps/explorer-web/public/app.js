@@ -22,6 +22,7 @@ const timelineTrackEl = document.getElementById("timelineTrack");
 const timelineGraphEl = document.getElementById("timelineGraph");
 const timelineIntervalEl = document.getElementById("timelineInterval");
 const timelineLegendEl = document.getElementById("timelineLegend");
+const timelineYAxisEl = document.getElementById("timelineYAxis");
 const timelineStartEl = document.getElementById("timelineStart");
 const timelineEndEl = document.getElementById("timelineEnd");
 const leaderboardResultsEl = document.getElementById("leaderboardResults");
@@ -244,6 +245,24 @@ function ethUnit() {
   return state.showEur ? "EUR" : "xhi";
 }
 
+// The WETH→EUR rate we price everything else against; null until CoinGecko has
+// answered (also the divisor that turns an EUR figure back into ETH/"xhi").
+function wethEurPrice() {
+  return state.eurPrices[WETH_ADDRESS] ?? null;
+}
+
+// Convert an ETH-denominated value into the currently displayed unit, returning
+// value AND unit together so the two can never disagree. EUR is only claimed
+// when the WETH price is actually known — otherwise we fall back to "xhi",
+// fixing the mismatch where the label said EUR but the number was still ETH.
+function displayValue(ethValue) {
+  if (state.showEur) {
+    const price = wethEurPrice();
+    if (price != null) return { value: ethValue * price, unit: "EUR" };
+  }
+  return { value: ethValue, unit: "xhi" };
+}
+
 // For plain ETH amounts that don't go through fmtAmount (gas/tip/fee
 // figures computed client-side, with no token-address-bearing amount object).
 function fmtEth(value, decimals = 4) {
@@ -425,10 +444,22 @@ function drawValueGraph() {
 
   timelineGraphEl.innerHTML = `<line x1="0" y1="${GRAPH_H - 4}" x2="${GRAPH_W}" y2="${GRAPH_H - 4}" stroke="var(--border)" stroke-width="1" vector-effect="non-scaling-stroke"/>${polylines}`;
 
-  timelineLegendEl.innerHTML = VALUE_SERIES.map(
-    (s) =>
-      `<span class="tl-legend-item"><span class="legend-swatch" style="background:${s.color}"></span>${s.label}</span>`,
-  ).join("") + `<span class="tl-legend-unit">value extracted (${ethUnit()}, log scale)${max > 0 ? ` · peak ${fmtEth(max, 2)}` : ""}</span>`;
+  // Unit and peak come from one source so they always agree (fixes the
+  // EUR-label-with-xhi-value mismatch). The peak now annotates the y-axis
+  // (top of the graph) rather than being printed under the timeline.
+  const { value: peak, unit } = displayValue(max);
+  if (timelineYAxisEl) {
+    timelineYAxisEl.innerHTML =
+      max > 0
+        ? `<span class="tl-yaxis-peak">${fmtNumber(peak)} ${unit}</span><span class="tl-yaxis-zero">0</span>`
+        : "";
+  }
+
+  timelineLegendEl.innerHTML =
+    VALUE_SERIES.map(
+      (s) =>
+        `<span class="tl-legend-item"><span class="legend-swatch" style="background:${s.color}"></span>${s.label}</span>`,
+    ).join("") + `<span class="tl-legend-unit">value extracted (${unit}, log scale)</span>`;
 }
 
 function renderTimeline() {
@@ -999,7 +1030,7 @@ function txLink(hash) {
 // Deep link into the DiscoUI trace view (apps/disco), which renders the
 // transaction's execution trace annotated with the MEV facts shown here.
 // The port comes from /env.js (nginx-injected) with the compose default.
-function traceLink(hash, legCount) {
+function traceLink(hash, legCount, incidentId) {
   const port = (window.__ENV && window.__ENV.discoWebPort) || 8082;
   const url = `http://${window.location.hostname}:${port}/ui/trace/${hash}`;
   const label = legCount > 1 ? `trace (${legCount} tx)` : "trace";
@@ -1007,7 +1038,10 @@ function traceLink(hash, legCount) {
     legCount > 1
       ? `Open all ${legCount} transactions of this incident as one DiscoUI workspace`
       : "Open the execution trace in DiscoUI";
-  return `<a class="trace-link" href="${url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${title}">${label}</a>`;
+  // data-incident lets hovering this button light up the sibling legs' incident
+  // markers so you can see which transactions belong together (sandwiches etc).
+  const incidentAttr = incidentId ? ` data-incident="${incidentId}"` : "";
+  return `<a class="trace-link"${incidentAttr} href="${url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${title}">${label}</a>`;
 }
 
 // Mirror of trace-api's incident resolution (workspace.ts): the legs of a
@@ -1069,19 +1103,73 @@ function renderSwapChips(swaps) {
     .join("");
 }
 
+// Net token-balance change the actor realized in this transaction, in ETH, at
+// current CoinGecko prices — the true P/L even across multiple tokens and when
+// the extractor ends the block shifted long one asset and short another. Built
+// from the tx's own swaps (tokenOut credited, tokenIn debited), each leg priced
+// via the WETH-relative EUR rates. Returns null when any involved token has no
+// price (so we never show a P/L that silently omits a leg) or the tx has no
+// swaps (e.g. address-view synthetic rows, liquidations) — callers fall back to
+// the single-token figure.
+function txPnlEth(tx) {
+  if (!tx.swaps || tx.swaps.length === 0) return null;
+  const weth = wethEurPrice();
+  if (weth == null || weth === 0) return null;
+
+  const deltaEur = new Map(); // tokenAddress -> value moved (EUR), signed
+  const add = (amount, sign) => {
+    if (!amount || !amount.tokenAddress) return false;
+    const price = state.eurPrices[amount.tokenAddress.toLowerCase()];
+    if (price == null) return false;
+    const key = amount.tokenAddress.toLowerCase();
+    deltaEur.set(key, (deltaEur.get(key) || 0) + sign * amount.value * price);
+    return true;
+  };
+
+  for (const s of tx.swaps) {
+    if (!add(s.tokenOut, 1)) return null;
+    if (!add(s.tokenIn, -1)) return null;
+  }
+  let eur = 0;
+  for (const v of deltaEur.values()) eur += v;
+  return eur / weth; // back into ETH so the EUR toggle re-prices consistently
+}
+
+// Format a P/L (given in ETH) into the active display unit, signed & colored.
+function fmtPnl(ethValue) {
+  const { value, unit } = displayValue(ethValue);
+  const sign = value >= 0 ? "+" : "";
+  const num = unit === "EUR" ? value.toFixed(2) : value.toFixed(4);
+  return `${sign}${num} ${unit}`;
+}
+
 function mevBadgesHtml(tx) {
-  return tx.mev.length
-    ? tx.mev
-        .map((m) => {
-          const info = MEV_INFO[m.type] || { label: m.type, short: "" };
-          const amount = m.profit || m.received;
-          const profitText = amount
-            ? ` <span class="${amount.value < 0 ? "loss" : "profit"}">${fmtAmount(amount)}</span>`
-            : "";
-          return `<span class="badge ${m.type}" title="${info.short}">${info.label}</span>${profitText}`;
-        })
-        .join("")
-    : `<span class="badge none">no attacks detected</span>`;
+  if (!tx.mev.length) return `<span class="badge none">no attacks detected</span>`;
+
+  const badges = tx.mev
+    .map((m) => {
+      const info = MEV_INFO[m.type] || { label: m.type, short: "" };
+      return `<span class="badge ${m.type}" title="${info.short}">${info.label}</span>`;
+    })
+    .join("");
+
+  // Total P/L across all tokens (X-amend): replaces the per-badge single-token
+  // amount when we can price every leg.
+  const pnl = txPnlEth(tx);
+  if (pnl != null) {
+    return `${badges} <span class="pnl ${pnl < 0 ? "loss" : "profit"}" title="Net profit/loss across every token this transaction moved, at current CoinGecko prices">${fmtPnl(pnl)}</span>`;
+  }
+
+  // fallback: the detector's single-token profit/received figure
+  const amounts = tx.mev
+    .map((m) => {
+      const amount = m.profit || m.received;
+      return amount
+        ? ` <span class="${amount.value < 0 ? "loss" : "profit"}">${fmtAmount(amount)}</span>`
+        : "";
+    })
+    .join("");
+  return `${badges}${amounts}`;
 }
 
 // Shared transaction-table renderer used by both the block view and the address
@@ -1109,12 +1197,13 @@ function renderResultTable(txs, { showBlock = false, emptyMsg, rerender } = {}) 
   const rows = txs
     .map((tx) => {
       const legs = incidentLegs(tx);
+      const incidentId = legs.length > 1 ? legs[0] : null;
       const traceLinkHtml =
         legs.length === 1
           ? traceLink(tx.hash)
           : incidentLinkCarrier.get(legs[0]) === tx.hash
-            ? traceLink(legs[0], legs.length)
-            : `<span class="trace-link-ref" title="Part of a multi-transaction incident - the trace link on its first transaction opens all ${legs.length} legs together">↳ incident</span>`;
+            ? traceLink(legs[0], legs.length, incidentId)
+            : `<span class="trace-link-ref" data-incident="${incidentId}" title="Part of a multi-transaction incident - the trace link on its first transaction opens all ${legs.length} legs together">↳ incident</span>`;
 
       const isExpanded = state.expanded.has(tx.hash);
       const hasDetail = tx.mev.length > 0 || tx.swaps.length > 0;
@@ -1138,7 +1227,7 @@ function renderResultTable(txs, { showBlock = false, emptyMsg, rerender } = {}) 
         : "";
 
       return `
-        <tr class="${tx.mev.length ? "has-mev" : ""} ${isExpanded ? "expanded" : ""}" data-tx="${tx.hash}" data-has-detail="${hasDetail}">
+        <tr class="${tx.mev.length ? "has-mev" : ""} ${isExpanded ? "expanded" : ""}" data-tx="${tx.hash}" data-has-detail="${hasDetail}"${incidentId ? ` data-incident="${incidentId}"` : ""}>
           ${blockCell}
           <td class="mono">${hasDetail ? '<span class="expand-arrow">▶</span>' : ""}<a class="addr" href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${shortHash(tx.hash)}</a> ${traceLinkHtml}</td>
           <td class="mono">${addrLink(tx.from)}</td>
@@ -1178,6 +1267,21 @@ function renderResultTable(txs, { showBlock = false, emptyMsg, rerender } = {}) 
       e.stopPropagation();
       loadBlock(Number(el.dataset.block));
     });
+  });
+
+  // Hovering the trace button (or an "↳ incident" marker) lights up every
+  // transaction of the same incident — the sandwich legs, the two arbitrage
+  // legs, etc — so you can see at a glance which rows belong together.
+  const setIncidentHighlight = (id, on) => {
+    resultEl
+      .querySelectorAll(`[data-incident="${id}"]`)
+      .forEach((n) => n.classList.toggle("incident-hi", on));
+  };
+  resultEl.querySelectorAll("[data-incident]").forEach((el) => {
+    const id = el.dataset.incident;
+    if (!id || id === "null") return;
+    el.addEventListener("mouseenter", () => setIncidentHighlight(id, true));
+    el.addEventListener("mouseleave", () => setIncidentHighlight(id, false));
   });
 
   resultEl.querySelectorAll("tr[data-tx]").forEach((row) => {
@@ -1245,14 +1349,23 @@ async function loadBlock(blockNumber, { silent = false } = {}) {
 
     pushHistory(data.blockNumber, data.transactions, data.builder, data.bid);
 
-    await refreshEurPrices();
-
     renderStats(state.transactions);
     renderIncomeChart(state.transactions, state.bid);
     renderMempoolBlock();
     renderTable();
     renderTicker();
     renderTimeline();
+
+    // Prices power both the EUR display and the per-tx P/L annotation, so we
+    // now fetch them for every block (not just in EUR mode). Do it after the
+    // first render so the table isn't blocked on CoinGecko, then re-render the
+    // P/L-bearing views once prices land.
+    refreshEurPrices().then(() => {
+      renderStats(state.transactions);
+      renderIncomeChart(state.transactions, state.bid);
+      rerenderResult();
+      renderTimeline();
+    });
 
     showToast(
       data.alreadyInspected
@@ -1400,13 +1513,15 @@ function collectTokenAddresses() {
 }
 
 async function refreshEurPrices() {
-  if (!state.showEur) return;
+  // Fetched for every block now (not just in EUR mode): the P/L annotation
+  // needs CoinGecko prices even when displaying "xhi". Merge rather than
+  // replace so previously-priced tokens survive a partial/failed refresh.
   try {
     const res = await fetch(`/api/eur-prices?tokens=${collectTokenAddresses().join(",")}`);
     const data = await res.json();
-    state.eurPrices = data.prices || {};
+    state.eurPrices = { ...state.eurPrices, ...(data.prices || {}) };
   } catch {
-    state.eurPrices = {};
+    /* keep whatever prices we already have */
   }
 }
 

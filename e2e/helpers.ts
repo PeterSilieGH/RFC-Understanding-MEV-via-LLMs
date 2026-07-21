@@ -34,6 +34,18 @@ export function anyArbitrageurAddress(): string | null {
   return psql("SELECT account_address FROM arbitrages ORDER BY block_number DESC LIMIT 1");
 }
 
+/** A block containing at least one arbitrage, or null. */
+export function anyArbitrageBlock(): number | null {
+  const out = psql("SELECT block_number FROM arbitrages ORDER BY block_number DESC LIMIT 1");
+  return out ? Number(out) : null;
+}
+
+/** A block containing at least one sandwich (a multi-tx incident), or null. */
+export function anySandwichBlock(): number | null {
+  const out = psql("SELECT block_number FROM sandwiches ORDER BY block_number DESC LIMIT 1");
+  return out ? Number(out) : null;
+}
+
 /** The front-run leg of an inspected sandwich, or null. */
 export function anySandwichFrontrunTxHash(): string | null {
   return psql(

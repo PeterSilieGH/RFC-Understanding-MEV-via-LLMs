@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 import {
   EXPLORER_API,
   EXPLORER_WEB,
+  anyArbitrageBlock,
   anyArbitrageurAddress,
+  anySandwichBlock,
   anySwapTxHash,
   latestInspectedBlock,
 } from "./helpers.js";
@@ -442,5 +444,51 @@ test.describe("explorer-web", () => {
     await expect(legend).toContainText("Liquidation");
     await expect(legend.locator(".tl-legend-item")).toHaveCount(3);
     await expect(legend.locator(".tl-legend-unit")).toContainText(/value extracted/i);
+
+    // amend: the peak moved from the legend to the y-axis; unit and value agree
+    await expect(legend).not.toContainText(/peak/i);
+    await expect(page.locator("#timelineYAxis")).toContainText(/xhi|EUR/, { timeout: 15_000 });
+  });
+
+  test("per-tx total P/L annotation, priced via CoinGecko (amend)", async ({ page }) => {
+    const block = anyArbitrageBlock();
+    test.skip(block === null, "no arbitrages in the shared postgres");
+
+    // prices are fetched for every block now (not just EUR mode) to drive P/L
+    const priceResponse = page.waitForResponse(
+      (res) => res.url().includes("/api/eur-prices") && res.ok(),
+    );
+    await page.goto(`${EXPLORER_WEB}/?block=${block}`);
+    await priceResponse;
+
+    // where every leg's token is priceable the Detected MEV cell shows a single
+    // signed total P/L (in "xhi" by default) instead of a per-token amount; the
+    // EUR toggle re-denominates it. Soft: illiquid legs legitimately fall back.
+    const pnl = page.locator("#result .pnl");
+    if ((await pnl.count()) > 0) {
+      await expect(pnl.first()).toHaveText(/[+-][\d.]+ xhi/);
+      await page.locator("#eurToggle").click();
+      await expect(pnl.first()).toHaveText(/[+-][\d.]+ (EUR|€)/);
+    }
+  });
+
+  test("hovering a trace button highlights related incident legs (amend)", async ({ page }) => {
+    const block = anySandwichBlock();
+    test.skip(block === null, "no sandwiches in the shared postgres");
+
+    const blockResponse = page.waitForResponse(
+      (res) => res.url().includes(`/api/block/${block}`) && res.ok(),
+    );
+    await page.goto(`${EXPLORER_WEB}/?block=${block}`);
+    await blockResponse;
+
+    // a sandwich is a multi-tx incident: its legs share a data-incident id, and
+    // the carrier leg's trace button lights up the sibling rows on hover
+    const incidentRows = page.locator("#result tr[data-incident]");
+    await expect(incidentRows.first()).toBeVisible();
+    const traceBtn = page.locator("#result a.trace-link[data-incident]").first();
+    await expect(traceBtn).toBeVisible();
+    await traceBtn.hover();
+    await expect(page.locator("#result tr.incident-hi").first()).toBeVisible();
   });
 });

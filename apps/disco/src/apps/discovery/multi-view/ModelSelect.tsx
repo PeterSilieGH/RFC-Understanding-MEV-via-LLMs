@@ -1,18 +1,27 @@
-// DIVERGENCE(mev): new file (ADR-009). Top-bar model picker — lists the models
-// available to agent-api (those with a working credential in the pi agent dir)
-// and selects the one used for analyze / verdict runs. Seeds from the agent-api
-// settings default (project .pi/settings.json over global) on first load; the
-// choice persists across reloads via the model store.
+// DIVERGENCE(mev): new file (ADR-009; generalized in the settings amendment).
+// A reusable agent-model picker. It lists the models available to agent-api
+// (those with a working credential in the pi agent dir) and is driven by an
+// external value/onChange, so Global app settings can mount two of them — one
+// for Analyze, one for Incident reporting. Seeds its value from the agent-api
+// settings default (project .pi/settings.json over global) the first time
+// models load; react-query caches the fetch, so mounting several shares it.
 import { useQuery } from '@tanstack/react-query'
 import { useEffect } from 'react'
-import { getAgentModels } from '../../../api/agent'
+import { type AgentModelRef, getAgentModels } from '../../../api/agent'
 import { Select } from '../../../components/Select'
-import { modelKey, useAgentModelStore } from '../panel-agent/model-store'
+import { modelKey } from '../panel-agent/model-store'
 
-export function ModelSelect() {
-  const selected = useAgentModelStore((s) => s.selected)
-  const setSelected = useAgentModelStore((s) => s.setSelected)
-
+export function AgentModelSelect({
+  label,
+  title,
+  value,
+  onChange,
+}: {
+  label: string
+  title: string
+  value: AgentModelRef | undefined
+  onChange: (model: AgentModelRef | undefined) => void
+}) {
   const modelsResponse = useQuery({
     queryKey: ['agent-models'],
     queryFn: getAgentModels,
@@ -22,32 +31,35 @@ export function ModelSelect() {
   const models = modelsResponse.data?.models ?? []
   const defaultRef = modelsResponse.data?.default ?? undefined
 
-  // Seed the picker from the settings default the first time models load.
+  // Seed this picker from the settings default the first time models load.
   useEffect(() => {
-    if (!selected && defaultRef) setSelected(defaultRef)
-  }, [selected, defaultRef, setSelected])
+    if (!value && defaultRef) onChange(defaultRef)
+  }, [value, defaultRef, onChange])
 
-  const value = selected ? modelKey(selected) : undefined
+  const selectedKey = value ? modelKey(value) : undefined
 
-  const onChange = (key: string) => {
+  const handleChange = (key: string) => {
     const model = models.find((m) => modelKey(m) === key)
-    if (model) setSelected({ provider: model.provider, id: model.id })
+    if (model) onChange({ provider: model.provider, id: model.id })
   }
 
   if (modelsResponse.isError) {
     return (
-      <div className="flex items-center text-aux-red text-xs" title="agent-api unreachable">
-        model: n/a
+      <div className="flex items-center gap-2 font-light text-sm">
+        <span className="w-40">{label}</span>
+        <span className="text-aux-red text-xs" title="agent-api unreachable">
+          agent-api unreachable
+        </span>
       </div>
     )
   }
 
   return (
-    <div className="flex items-center gap-1" title="Model for Analyze / verdict runs">
-      <span className="text-coffee-400 text-xs max-lg:hidden">Model</span>
+    <div className="flex items-center gap-2 font-light text-sm" title={title}>
+      <span className="w-40">{label}</span>
       <Select.Root
-        value={value}
-        onValueChange={onChange}
+        value={selectedKey}
+        onValueChange={handleChange}
         disabled={models.length === 0}
       >
         <Select.Trigger
