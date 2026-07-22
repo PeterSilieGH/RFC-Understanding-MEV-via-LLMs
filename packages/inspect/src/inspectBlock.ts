@@ -27,8 +27,11 @@ import type {
 import { writeBlock } from "./writeBlock.js";
 
 export interface InspectResult {
+  chainId: string;
   blockNumber: number;
+  blockHash: string;
   blockTimestamp: number;
+  receipts: Block["receipts"];
   classifiedTraces: ClassifiedTrace[];
   transfers: Transfer[];
   swaps: Swap[];
@@ -73,8 +76,11 @@ export function inspectBlockFacts(block: Block): InspectResult {
   });
 
   return {
+    chainId: block.chainId,
     blockNumber: block.blockNumber,
+    blockHash: block.blockHash,
     blockTimestamp: block.blockTimestamp,
+    receipts: block.receipts,
     classifiedTraces,
     transfers,
     swaps,

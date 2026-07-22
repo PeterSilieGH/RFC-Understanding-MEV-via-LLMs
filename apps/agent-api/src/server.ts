@@ -1,25 +1,27 @@
 import { createHash } from "node:crypto";
 // agent-api: pi-harness analysis skills for the disco Analyze panel (ADR-009).
 import { loadConfig } from "@mev/config";
-import { getProvider } from "@mev/rpc";
-import { ethers } from "ethers";
 import express from "express";
 import {
-  type BundleContractInput,
-  type BundleContractRef,
-  buildBundlePrompt,
+  BUNDLE_ANALYZER_VERSION,
+  BUNDLE_PROMPT_VERSION,
+  BUNDLE_SCHEMA_VERSION,
   bundleText,
-  contractCodehash,
   estimateTokens,
-  opaqueUnverifiedBundle,
-  parseGeneratedBundles,
 } from "./bundles.js";
-import { DiscoveryContractLoader, UnverifiedContractError } from "./discoveryContracts.js";
+import {
+  type ContractCandidate,
+  authorizeCandidates,
+  loadCandidateCatalog,
+} from "./candidateCatalog.js";
+import { buildContractAnalysisConfig } from "./contractAnalysis.js";
 import { listModels } from "./models.js";
 import { type RunEvent, type ThinkingLevel, runAnalysis } from "./runner.js";
 import { formatSignatureList, parseFunctionSignatures } from "./signatures.js";
 import { SKILLS } from "./skills.js";
 import {
+  type CompactToolResult,
+  type ConsultedBundleRevision,
   type ContractBundle,
   type ResearchKind,
   type SessionTurn,
@@ -42,7 +44,7 @@ import {
 
 const config = loadConfig();
 const app = express();
-app.use(express.json({ limit: "8mb" })); // flattened source context can be large
+app.use(express.json());
 
 app.get("/health", (_req, res) => {
   res.send("OK");
@@ -68,280 +70,65 @@ function pickKinds(value: unknown): ResearchKind[] {
   ];
 }
 
-function pickContracts(value: unknown): BundleContractRef[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (typeof item !== "object" || item === null) return [];
-    const c = item as Record<string, unknown>;
-    if (typeof c.address !== "string") return [];
-    return [
-      {
-        address: c.address,
-        name: typeof c.name === "string" ? c.name : undefined,
-        codehash: typeof c.codehash === "string" ? c.codehash : undefined,
-      },
-    ];
-  });
-}
-
-type ModelRef = { provider: string; id: string } | undefined;
-
-const bundlePreparations = new Map<string, Promise<void>>();
-
-async function generateContractBundles(input: {
-  project: string;
-  identity: { contract: BundleContractInput; codehash: string };
-  missing: ResearchKind[];
-  targetBundleTokens: number;
-  gas?: string;
-  effort?: ThinkingLevel;
-  model: ModelRef;
-  emit: (event: RunEvent) => void;
-  signal: AbortSignal;
-}): Promise<void> {
-  const { project, identity, missing, targetBundleTokens, gas, effort, model, emit, signal } =
-    input;
-  let report = "";
-  let analysisError: string | undefined;
-  await runAnalysis(
-    {
-      prompt: buildBundlePrompt(identity.contract, missing, targetBundleTokens, gas),
-      entries: parseFunctionSignatures(identity.contract.codeContext),
-      transcriptHeader: [
-        "Skill: autonomous-bundle",
-        `Target: ${identity.contract.address}`,
-        `Kinds: ${missing.join(", ")}`,
-      ],
-      enableCast: true,
-      thinkingLevel: effort,
-      model,
-    },
-    (event) => {
-      if (event.type === "done") report = event.report;
-      else if (event.type === "error") analysisError = event.message;
-      else if (event.type === "queued" || event.type === "tool") emit(event);
-    },
-    signal,
-  );
-  if (!report) throw new Error(analysisError ?? "analysis returned no bundle output");
-
-  const generatedBundles = parseGeneratedBundles(report, missing);
-  const runId = await saveRun({
-    project,
-    skill: "analyze-code",
-    addresses: normalizeAddresses([identity.contract.address]),
-    question: `ADR-012 bundle generation: ${missing.join(", ")}`,
-    report,
-    transcript: report.slice(0, 4000),
-  });
-  for (const generated of generatedBundles) {
-    const text = [
-      generated.role,
-      generated.entryPoints.join(" "),
-      generated.flowSummary,
-      generated.notes,
-    ].join("\n");
-    await saveBundle({
-      codehash: identity.codehash,
-      kind: generated.kind,
-      addresses: normalizeAddresses([identity.contract.address]),
-      role: generated.role,
-      entryPoints: generated.entryPoints,
-      flowSummary: generated.flowSummary,
-      notes: generated.notes,
-      tokenEstimate: estimateTokens(text),
-      provenanceRunId: runId,
-    });
-  }
-}
-
-async function ensureContractBundles(input: {
-  project: string;
-  identity: { contract: BundleContractInput; codehash: string };
-  kinds: ResearchKind[];
-  targetBundleTokens: number;
-  gas?: string;
-  effort?: ThinkingLevel;
-  model: ModelRef;
-  emit: (event: RunEvent) => void;
-  signal: AbortSignal;
-}): Promise<ContractBundle[]> {
-  const { identity, kinds, emit } = input;
-  while (true) {
-    const existing = await getBundles([identity.codehash], kinds);
-    const missing = kinds.filter((kind) => !existing.some((bundle) => bundle.kind === kind));
-    if (missing.length === 0) return existing;
-
-    const active = bundlePreparations.get(identity.codehash);
-    if (active) {
-      emit({ type: "queued" });
-      await active.catch(() => {});
-      continue;
-    }
-
-    const preparation = generateContractBundles({ ...input, missing });
-    bundlePreparations.set(identity.codehash, preparation);
-    try {
-      await preparation;
-    } finally {
-      if (bundlePreparations.get(identity.codehash) === preparation) {
-        bundlePreparations.delete(identity.codehash);
-      }
-    }
-  }
-}
-
-// Autonomous bundle preparation (ADR-012): candidates are the whole incident
-// graph, not a manual node selection. Existing (codehash, kind) rows are reused;
-// all missing active kinds for one contract are emitted by one model call.
+// ADR-016: opening Discovery is a catalog/cache lookup only. This route never
+// loads full source, decompiles bytecode, calls RPC, or invokes a model.
 app.post("/api/agent/bundles/prepare", async (req, res) => {
   const body = req.body as {
     project?: string;
     kinds?: unknown;
-    contracts?: unknown;
-    gas?: string;
-    effort?: unknown;
-    model?: unknown;
   };
   const project = body.project?.trim();
   const kinds = pickKinds(body.kinds);
-  const contracts = pickContracts(body.contracts);
-  const gas = typeof body.gas === "string" ? body.gas.trim() || undefined : undefined;
-  const effort = pickEffort(body.effort);
-  if (!project || kinds.length === 0 || contracts.length === 0) {
-    res.status(400).json({ error: "project, active kinds, and contract references are required" });
+  if (!project || kinds.length === 0) {
+    res.status(400).json({ error: "project and active kinds are required" });
     return;
   }
-  const signal = abortSignalFor(req, res);
   startNdjson(res);
   try {
-    const model = pickModel(body.model);
-    const modelList = await listModels();
-    const selectedModel = model ?? modelList.default ?? undefined;
-    const contextWindow =
-      modelList.models.find(
-        (candidate) =>
-          candidate.provider === selectedModel?.provider && candidate.id === selectedModel?.id,
-      )?.contextWindow ?? 128_000;
-    const loader = new DiscoveryContractLoader(
-      `http://localhost:${config.DISCO_API_PORT}`,
-      project,
-    );
-    const resolved = (
-      await mapConcurrent(contracts, 16, async (contract) => {
-        try {
-          return await resolveContractIdentity(contract, loader);
-        } catch (err) {
-          writeNdjson(res, {
-            type: "warning",
-            address: contract.address,
-            message: (err as Error).message,
-          });
-          return undefined;
-        }
-      })
-    ).filter((identity): identity is ResolvedBundleIdentity => identity !== undefined);
-    const identities = deduplicateIdentities(resolved);
+    const catalog = await loadCandidateCatalog(project);
     const cachedBundles = await getBundles(
-      identities.map((identity) => identity.codehash),
+      catalog.candidates.map((item) => item.runtimeCodehash),
       kinds,
     );
-    const cachedByCodehash = new Map<string, ContractBundle[]>();
-    for (const bundle of cachedBundles) {
-      const values = cachedByCodehash.get(bundle.codehash) ?? [];
-      values.push(bundle);
-      cachedByCodehash.set(bundle.codehash, values);
-    }
+    writeNdjson(res, {
+      type: "catalog",
+      fingerprint: catalog.fingerprint,
+      snapshot: catalog.snapshot,
+    });
     writeNdjson(res, {
       type: "progress",
       phase: "resolved",
       completed: 0,
-      total: identities.length,
+      total: catalog.candidates.length,
     });
-    // Reserve prompt/verdict room, then divide the reusable-context allowance
-    // across every candidate kind. This is the pre-aggregation size probe that
-    // nudges generation tighter for small-window models or large incidents.
-    const targetBundleTokens = Math.max(
-      160,
-      Math.min(
-        700,
-        Math.floor((contextWindow * 0.65) / (Math.max(1, identities.length) * kinds.length)),
-      ),
-    );
     let completed = 0;
-    await mapConcurrent(identities, config.AGENT_MAX_CONCURRENCY, async (identity) => {
-      try {
-        // Check durable rows before loading flattened source. One source load
-        // and one model run serve every deployment sharing this codehash.
-        const existing = cachedByCodehash.get(identity.codehash) ?? [];
-        const missing = kinds.filter((kind) => !existing.some((bundle) => bundle.kind === kind));
-        writeNdjson(res, {
-          type: "progress",
-          phase: missing.length === 0 ? "cached" : "analyzing",
-          completed,
-          total: identities.length,
-          address: identity.refs[0].address,
-        });
-        let bundles = existing;
-        if (missing.length > 0) {
-          try {
-            const contract = identity.contract ?? (await loadFirstAvailable(loader, identity.refs));
-            bundles = await ensureContractBundles({
-              project,
-              identity: { codehash: identity.codehash, contract },
-              kinds,
-              targetBundleTokens,
-              gas,
-              effort,
-              model,
-              emit: (event) => writeNdjson(res, event),
-              signal,
-            });
-          } catch (err) {
-            if (!(err instanceof UnverifiedContractError)) throw err;
-            const addresses = normalizeAddresses(identity.refs.map((ref) => ref.address));
-            for (const kind of missing) {
-              const generated = opaqueUnverifiedBundle(kind);
-              const text = [generated.role, generated.flowSummary, generated.notes].join("\n");
-              await saveBundle({
-                codehash: identity.codehash,
-                kind,
-                addresses,
-                role: generated.role,
-                entryPoints: generated.entryPoints,
-                flowSummary: generated.flowSummary,
-                notes: generated.notes,
-                tokenEstimate: estimateTokens(text),
-                provenanceRunId: null,
-              });
-            }
-            bundles = await getBundles([identity.codehash], kinds);
-          }
+    for (const candidate of catalog.candidates) {
+      for (const kind of kinds) {
+        const bundle = cachedBundles.find(
+          (item) =>
+            item.codehash === candidate.runtimeCodehash &&
+            item.kind === kind &&
+            isCurrentBundle(item),
+        );
+        if (bundle) {
+          const withAddress = bundle.addresses.includes(candidate.address)
+            ? bundle
+            : ((await addBundleAddresses(bundle.codehash, bundle.kind, [candidate.address])) ??
+              bundle);
+          writeNdjson(res, { type: "bundle", candidateId: candidate.id, bundle: withAddress });
+        } else {
+          writeNdjson(res, { type: "candidate", kind, candidate });
         }
-        for (let bundle of bundles) {
-          const addresses = normalizeAddresses(identity.refs.map((ref) => ref.address));
-          if (addresses.some((address) => !bundle.addresses.includes(address))) {
-            bundle = (await addBundleAddresses(bundle.codehash, bundle.kind, addresses)) ?? bundle;
-          }
-          writeNdjson(res, { type: "bundle", bundle });
-        }
-      } catch (err) {
-        writeNdjson(res, {
-          type: "warning",
-          address: identity.refs[0].address,
-          message: (err as Error).message,
-        });
-      } finally {
-        completed++;
-        writeNdjson(res, {
-          type: "progress",
-          phase: "completed",
-          completed,
-          total: identities.length,
-          address: identity.refs[0].address,
-        });
       }
-    });
+      completed++;
+      writeNdjson(res, {
+        type: "progress",
+        phase: "completed",
+        completed,
+        total: catalog.candidates.length,
+        address: candidate.address,
+      });
+    }
     writeNdjson(res, { type: "prepared" });
   } catch (err) {
     writeNdjson(res, { type: "error", message: (err as Error).message });
@@ -350,94 +137,19 @@ app.post("/api/agent/bundles/prepare", async (req, res) => {
   }
 });
 
-interface ResolvedBundleIdentity {
-  ref: BundleContractRef;
-  codehash: string;
-  contract?: BundleContractInput;
-}
-
-interface DeduplicatedBundleIdentity {
-  refs: BundleContractRef[];
-  codehash: string;
-  contract?: BundleContractInput;
-}
-
-async function resolveContractIdentity(
-  contract: BundleContractRef,
-  loader: DiscoveryContractLoader,
-): Promise<ResolvedBundleIdentity> {
-  if (contract.codehash && /^0x[0-9a-f]{64}$/i.test(contract.codehash)) {
-    return { ref: contract, codehash: contract.codehash.toLowerCase() };
-  }
-  const address = normalizeAddresses([contract.address])[0];
-  if (address) {
-    try {
-      const runtimeCode = await getProvider().getCode(address);
-      if (runtimeCode !== "0x") {
-        return { ref: contract, codehash: ethers.keccak256(runtimeCode) };
-      }
-    } catch {
-      // Fall through to a deterministic source identity. This is the only path
-      // that loads source before the durable bundle lookup.
-    }
-  }
-  const hydrated = await loader.load(contract);
-  return { ref: contract, codehash: contractCodehash(hydrated), contract: hydrated };
-}
-
-function deduplicateIdentities(values: ResolvedBundleIdentity[]): DeduplicatedBundleIdentity[] {
-  const byCodehash = new Map<string, DeduplicatedBundleIdentity>();
-  for (const value of values) {
-    const existing = byCodehash.get(value.codehash);
-    if (existing) {
-      existing.refs.push(value.ref);
-      existing.contract ??= value.contract;
-    } else {
-      byCodehash.set(value.codehash, {
-        refs: [value.ref],
-        codehash: value.codehash,
-        contract: value.contract,
-      });
-    }
-  }
-  return [...byCodehash.values()];
-}
-
-async function loadFirstAvailable(
-  loader: DiscoveryContractLoader,
-  refs: BundleContractRef[],
-): Promise<BundleContractInput> {
-  let lastError: unknown;
-  let unverified: UnverifiedContractError | undefined;
-  for (const ref of refs) {
-    try {
-      return await loader.load(ref);
-    } catch (err) {
-      lastError = err;
-      if (err instanceof UnverifiedContractError) unverified = err;
-    }
-  }
-  if (unverified) throw unverified;
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("no verified contract source is available");
-}
-
-async function mapConcurrent<T, R>(
-  values: readonly T[],
-  limit: number,
-  fn: (value: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(values.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, values.length) }, async () => {
-    while (next < values.length) {
-      const index = next++;
-      results[index] = await fn(values[index]);
-    }
-  });
-  await Promise.all(workers);
-  return results;
+function isCurrentBundle(bundle: ContractBundle): boolean {
+  const versioned = bundle as ContractBundle & {
+    schemaVersion?: number;
+    promptVersion?: string;
+    analyzerVersion?: string;
+    status?: string;
+  };
+  return (
+    versioned.status !== "stale" &&
+    versioned.schemaVersion === BUNDLE_SCHEMA_VERSION &&
+    versioned.promptVersion === BUNDLE_PROMPT_VERSION[bundle.kind] &&
+    versioned.analyzerVersion === BUNDLE_ANALYZER_VERSION
+  );
 }
 
 app.post("/api/agent/bundles", async (req, res) => {
@@ -552,6 +264,7 @@ function discoveryBase(
   traceTree: string,
   swaps: string,
   gas: string,
+  unresolved: ContractCandidate[],
 ): string {
   return [
     DISCOVERY_PROMPTS[kind],
@@ -559,6 +272,19 @@ function discoveryBase(
     "",
     "Selected reusable contract bundles:",
     ...bundles.map((bundle, i) => `\n=== Bundle ${i + 1} ===\n${bundleText(bundle)}`),
+    // ADR-016 §3: unresolved candidates are analyzed lazily. Give the model the
+    // opaque ids it may pass to request_contract_analysis, but no addresses/code
+    // it could use to fabricate a request outside the authorized selection.
+    ...(unresolved.length > 0
+      ? [
+          "",
+          "Unresolved selected candidates (call request_contract_analysis with the candidateId to analyze one, only if it materially affects the verdict):",
+          ...unresolved.map(
+            (candidate) =>
+              `- candidateId=${candidate.id} · ${candidate.name ?? "unnamed"} (${candidate.address}) · evidence=${candidate.sourceStatus}${candidate.traceRelevance ? ` · ${candidate.traceRelevance}` : ""}`,
+          ),
+        ]
+      : []),
     ...(traceTree ? ["", "Structural trace tree:", traceTree] : []),
     ...(swaps ? ["", "Decoded swaps:", swaps] : []),
     ...(gas ? ["", "Incident economics (gas & builder tip):", gas] : []),
@@ -574,12 +300,16 @@ app.post("/api/agent/discovery", async (req, res) => {
     incident?: string;
     kind?: unknown;
     codehashes?: unknown;
+    candidateIds?: unknown;
+    catalogFingerprint?: string;
     question?: string;
     traceTree?: string;
     swaps?: string;
     gas?: string;
     effort?: unknown;
     model?: unknown;
+    analyzeModel?: unknown;
+    analyzeEffort?: unknown;
     reset?: boolean;
   };
   const project = body.project?.trim();
@@ -588,23 +318,58 @@ app.post("/api/agent/discovery", async (req, res) => {
   const codehashes = Array.isArray(body.codehashes)
     ? body.codehashes.filter((x): x is string => typeof x === "string")
     : [];
-  if (!project || !incident || !kind || codehashes.length === 0) {
-    res.status(400).json({ error: "project, incident, kind, and selected bundles are required" });
+  const candidateIds = Array.isArray(body.candidateIds)
+    ? [...new Set(body.candidateIds.filter((x): x is string => typeof x === "string"))]
+    : [];
+  const catalogFingerprint = body.catalogFingerprint?.trim();
+  if (!project || !incident || !kind || (codehashes.length === 0 && candidateIds.length === 0)) {
+    res.status(400).json({
+      error: "project, incident, kind, and at least one selected bundle or candidate are required",
+    });
     return;
   }
   const bundles = await getBundles(codehashes, [kind]);
-  if (bundles.length === 0) {
-    res.status(409).json({ error: `no selected ${kind} bundles are available` });
+
+  // ADR-016 §3: authorize the model's lazy-analysis surface server-side. The
+  // parent may request analysis only for candidates in this selection.
+  let candidates: ContractCandidate[] = [];
+  if (candidateIds.length > 0) {
+    if (!catalogFingerprint) {
+      res.status(400).json({ error: "catalogFingerprint is required when selecting candidates" });
+      return;
+    }
+    try {
+      ({ candidates } = await authorizeCandidates({
+        project,
+        fingerprint: catalogFingerprint,
+        kind,
+        candidateIds,
+      }));
+    } catch (err) {
+      res.status(409).json({ error: (err as Error).message });
+      return;
+    }
+  }
+  if (bundles.length === 0 && candidates.length === 0) {
+    res.status(409).json({ error: `no selected ${kind} bundles or candidates are available` });
     return;
   }
+  // Candidates already carrying a current bundle are analyzed, not lazy.
+  const bundleCodehashes = new Set(bundles.map((bundle) => bundle.codehash));
+  const unresolved = candidates.filter(
+    (candidate) => !bundleCodehashes.has(candidate.runtimeCodehash),
+  );
   const model = pickModel(body.model);
   const effort = pickEffort(body.effort) ?? "low";
+  const analyzeModel = pickModel(body.analyzeModel) ?? model;
+  const analyzeEffort = pickEffort(body.analyzeEffort) ?? effort;
   const base = discoveryBase(
     kind,
     bundles,
     body.traceTree?.trim() ?? "",
     body.swaps?.trim() ?? "",
     body.gas?.trim() ?? "",
+    unresolved,
   );
   const modelList = await listModels();
   const selectedModel = model ?? modelList.default ?? undefined;
@@ -622,8 +387,17 @@ app.post("/api/agent/discovery", async (req, res) => {
     });
     return;
   }
+  // The fingerprint covers selected bundles AND the authorized unresolved
+  // candidate set, so changing either the selection or the tool's authority
+  // starts a fresh session instead of reusing stale context/tool grants.
   const fingerprint = createHash("sha256")
-    .update(JSON.stringify(bundles.map((b) => [b.codehash, b.updatedAt])))
+    .update(
+      JSON.stringify({
+        bundles: bundles.map((b) => [b.codehash, b.updatedAt]),
+        candidates: [...unresolved.map((c) => c.id)].sort(),
+        catalog: catalogFingerprint ?? null,
+      }),
+    )
     .digest("hex");
   const previous = await getSession(project, incident, kind);
   const compatible =
@@ -656,6 +430,22 @@ app.post("/api/agent/discovery", async (req, res) => {
     model?.id ?? "default",
     effort,
   ].join(":");
+  // ADR-016 §3: mutable sinks the parent persists with its durable session so a
+  // follow-up after restart rehydrates which reusable bundles it consulted.
+  const consulted: ConsultedBundleRevision[] = [...(previous?.consultedBundleRevisions ?? [])];
+  const compact: CompactToolResult[] = [...(previous?.compactToolResults ?? [])];
+  const contractAnalysis =
+    unresolved.length > 0
+      ? buildContractAnalysisConfig({
+          project,
+          kind,
+          candidates: unresolved,
+          childModel: analyzeModel,
+          childEffort: analyzeEffort,
+          consulted,
+          compact,
+        })
+      : undefined;
   startNdjson(res);
   let report = "";
   let contextUsage: Extract<RunEvent, { type: "usage" }> | undefined;
@@ -665,12 +455,17 @@ app.post("/api/agent/discovery", async (req, res) => {
         prompt: question,
         rehydrationPrompt,
         persistentKey,
-        transcriptHeader: [`Discovery: ${kind}`, `Bundles: ${bundles.length}`],
+        transcriptHeader: [
+          `Discovery: ${kind}`,
+          `Bundles: ${bundles.length}`,
+          `Candidates: ${unresolved.length}`,
+        ],
         model,
         systemPromptSuffix: DISCOVERY_PROMPTS[kind],
         // ADR-013 §6/§8: stream reasoning and offer the read-only cast tool.
         thinkingLevel: effort,
         enableCast: true,
+        contractAnalysis,
       },
       (event) => {
         if (event.type === "done") report = event.report;
@@ -694,6 +489,9 @@ app.post("/api/agent/discovery", async (req, res) => {
           { role: "user", text: question },
           { role: "assistant", text: report },
         ]),
+        candidateCatalogFingerprint: catalogFingerprint ?? null,
+        consultedBundleRevisions: consulted,
+        compactToolResults: compact,
       });
       writeNdjson(res, { type: "session", session: saved });
     }

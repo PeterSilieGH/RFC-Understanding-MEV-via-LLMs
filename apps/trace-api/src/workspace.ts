@@ -11,12 +11,14 @@
 // not the deep-linked one, so front-run, victim and back-run links all map
 // to the same project.
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "@mev/config";
 import { deduplicateProjectInPlace } from "@mev/flat-store";
+import { getProvider } from "@mev/rpc";
 import type { DebugTransactionCall } from "@mev/trace-graph";
 import { ethers } from "ethers";
+import { importDiscoveryEvidence } from "./contractEvidence.js";
 import { getTraceCached } from "./provider.js";
 
 const config = loadConfig();
@@ -55,6 +57,13 @@ export interface WorkspaceStatus extends Partial<WorkspaceEnrichment> {
   legs: IncidentLeg[];
   addressCount: number | null;
   error: string | null;
+  snapshot: WorkspaceSnapshot;
+}
+
+export interface WorkspaceSnapshot {
+  blockNumber: number;
+  blockHash: string;
+  timestamp: number;
 }
 
 interface RunState {
@@ -62,6 +71,7 @@ interface RunState {
   legs: IncidentLeg[];
   addressCount: number | null;
   error: string | null;
+  snapshot: WorkspaceSnapshot;
 }
 
 // One state per project; concurrent requests for any leg of the same
@@ -99,12 +109,15 @@ const COUNTERPART_ROLE_BY_TYPE: Record<string, LegRole> = {
 
 const TX_HASH_RE = /^0x[0-9a-f]{64}$/;
 
-async function resolveIncidentLegs(txHash: string): Promise<IncidentLeg[]> {
+async function resolveIncident(
+  txHash: string,
+): Promise<{ legs: IncidentLeg[]; blockNumber: number | null }> {
   const res = await fetch(`http://localhost:${config.EXPLORER_API_PORT}/api/mev/tx/${txHash}`);
   if (!res.ok) {
     throw new Error(`explorer-api /api/mev/tx returned ${res.status}`);
   }
   const body = (await res.json()) as {
+    blockNumber: number | null;
     transaction: { mev: Record<string, unknown>[] } | null;
   };
 
@@ -134,7 +147,10 @@ async function resolveIncidentLegs(txHash: string): Promise<IncidentLeg[]> {
       if (Array.isArray(list)) for (const h of list) add(h, role, viaType);
     }
   }
-  return [...legs.values()];
+  return {
+    legs: [...legs.values()],
+    blockNumber: Number.isSafeInteger(body.blockNumber) ? body.blockNumber : null,
+  };
 }
 
 /** Unique call targets across all legs' traces, in trace order. */
@@ -183,40 +199,38 @@ ${addresses.map((a) => `    "eth:${a}"`).join(",\n")}
 }
 
 /**
- * Runs `l2b discover <project>` through disco-api's terminal endpoint and
- * waits for the SSE stream to end. Closing the stream kills the run
- * server-side, which is also how a timeout aborts a stuck run.
+ * Runs `l2b discover <project> --timestamp …` through the monorepo-owned bridge
+ * that lives next to disco-api. The bridge validates arguments and never
+ * exposes a free-form shell command.
  */
 // Discovery runs are serialized process-wide (not just deduped per project):
 // concurrent `l2b discover` runs share the discovery-cache SQLite and die
 // with SQLITE_BUSY when they overlap.
 let discoveryQueue: Promise<void> = Promise.resolve();
 
-function runDiscovery(project: string): Promise<void> {
-  const run = discoveryQueue.then(() => runDiscoveryNow(project));
+function runDiscovery(project: string, timestamp: number): Promise<void> {
+  const run = discoveryQueue.then(() => runDiscoveryNow(project, timestamp));
   discoveryQueue = run.catch(() => {});
   return run;
 }
 
-async function runDiscoveryNow(project: string): Promise<void> {
+async function runDiscoveryNow(project: string, timestamp: number): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS);
   try {
-    const res = await fetch(
-      `http://localhost:${config.DISCO_API_PORT}/api/terminal/discover?project=${project}&devMode=false`,
-      { signal: controller.signal },
-    );
-    if (!res.ok || !res.body) {
-      throw new Error(`disco-api terminal/discover returned ${res.status}`);
-    }
-    const output = await new Response(res.body).text();
-    const exit = output.match(/Process exited with code (\d+)/);
-    if (!exit || exit[1] !== "0") {
-      const tail = output.trim().split("\n").slice(-5).join("\n");
+    const res = await fetch(`http://localhost:${config.DISCOVERY_RUNNER_PORT}/discover`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ project, timestamp }),
+      signal: controller.signal,
+    });
+    const body = (await res.json().catch(() => undefined)) as
+      | { ok?: boolean; exitCode?: number; output?: string; error?: string }
+      | undefined;
+    if (!res.ok || !body?.ok) {
       throw new Error(
-        exit
-          ? `discovery exited with code ${exit[1]}: ${tail}`
-          : `discovery stream ended without exit: ${tail}`,
+        body?.error ??
+          `discovery runner returned ${res.status}${body?.output ? `: ${body.output}` : ""}`,
       );
     }
   } catch (err) {
@@ -240,10 +254,23 @@ async function prepareWorkspace(project: string, legs: IncidentLeg[]): Promise<v
     }
     state.addressCount = addresses.length;
     await writeProjectConfig(project, addresses);
-    await runDiscovery(project);
+    await runDiscovery(project, state.snapshot.timestamp);
     if (!existsSync(join(projectDir(project), "discovered.json"))) {
       throw new Error("discovery finished but wrote no discovered.json");
     }
+    const discovered = JSON.parse(
+      await readFile(join(projectDir(project), "discovered.json"), "utf8"),
+    ) as { timestamp?: unknown };
+    if (discovered.timestamp !== state.snapshot.timestamp) {
+      throw new Error(
+        `discovery snapshot mismatch: requested ${state.snapshot.timestamp}, output ${String(discovered.timestamp)}`,
+      );
+    }
+    await importDiscoveryEvidence(project, state.snapshot);
+    const snapshotPath = join(projectDir(project), "evidence-snapshot.json");
+    const pendingSnapshot = `${snapshotPath}.tmp`;
+    await writeFile(pendingSnapshot, `${JSON.stringify(state.snapshot, null, 2)}\n`);
+    await rename(pendingSnapshot, snapshotPath);
     // ADR-012: keep l2b's expected per-project paths but back recurring source
     // bodies with one shared content-addressed inode. The hidden store lives in
     // the same bind-mounted project root, outside every synthetic project.
@@ -308,16 +335,18 @@ async function readEnrichment(project: string): Promise<WorkspaceEnrichment | un
  * an existing discovered.json is served from disk without re-running.
  */
 export async function getWorkspaceStatus(txHash: string): Promise<WorkspaceStatus> {
-  const legs = await resolveIncidentLegs(txHash);
+  const incident = await resolveIncident(txHash);
+  const legs = incident.legs;
   const project = projectNameFor(legs);
 
   let state = runs.get(project);
   if (!state) {
-    if (existsSync(join(projectDir(project), "discovered.json"))) {
-      state = { status: "ready", legs, addressCount: null, error: null };
+    const snapshot = await resolveWorkspaceSnapshot(txHash, incident.blockNumber);
+    if (await projectMatchesSnapshot(project, snapshot)) {
+      state = { status: "ready", legs, addressCount: null, error: null, snapshot };
       runs.set(project, state);
     } else {
-      state = { status: "discovering", legs, addressCount: null, error: null };
+      state = { status: "discovering", legs, addressCount: null, error: null, snapshot };
       runs.set(project, state);
       void prepareWorkspace(project, legs);
     }
@@ -333,6 +362,46 @@ export async function getWorkspaceStatus(txHash: string): Promise<WorkspaceStatu
     legs: state.legs,
     addressCount: state.addressCount,
     error: state.error,
+    snapshot: state.snapshot,
     ...enrichment,
   };
+}
+
+async function resolveWorkspaceSnapshot(
+  txHash: string,
+  reportedBlockNumber: number | null,
+): Promise<WorkspaceSnapshot> {
+  const provider = getProvider();
+  const blockNumber =
+    reportedBlockNumber ?? (await provider.getTransactionReceipt(txHash))?.blockNumber;
+  if (blockNumber === undefined || blockNumber === null) {
+    throw new Error(`transaction ${txHash} has no mined block`);
+  }
+  const block = await provider.getBlock(blockNumber);
+  if (!block?.hash) throw new Error(`block ${blockNumber} is unavailable`);
+  return { blockNumber, blockHash: block.hash.toLowerCase(), timestamp: block.timestamp };
+}
+
+async function projectMatchesSnapshot(
+  project: string,
+  snapshot: WorkspaceSnapshot,
+): Promise<boolean> {
+  if (!existsSync(join(projectDir(project), "discovered.json"))) return false;
+  try {
+    const [discoveredRaw, snapshotRaw] = await Promise.all([
+      readFile(join(projectDir(project), "discovered.json"), "utf8"),
+      readFile(join(projectDir(project), "evidence-snapshot.json"), "utf8"),
+    ]);
+    const discovered = JSON.parse(discoveredRaw) as { timestamp?: unknown };
+    const recorded = JSON.parse(snapshotRaw) as Partial<WorkspaceSnapshot>;
+    return (
+      discovered.timestamp === snapshot.timestamp &&
+      recorded.blockNumber === snapshot.blockNumber &&
+      recorded.blockHash?.toLowerCase() === snapshot.blockHash &&
+      recorded.timestamp === snapshot.timestamp
+    );
+  } catch {
+    // Old synthetic projects lack snapshot provenance and must be regenerated.
+    return false;
+  }
 }

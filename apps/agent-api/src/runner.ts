@@ -26,7 +26,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "@mev/config";
 import { Type } from "typebox";
-import { RunScheduler } from "./scheduler.js";
+import { type ProviderPermit, RunScheduler } from "./scheduler.js";
 import { type FunctionEntry, lookupFunction } from "./signatures.js";
 
 const execFileAsync = promisify(execFile);
@@ -44,7 +44,40 @@ export type RunEvent =
   | { type: "flagged"; addresses: string[] }
   | { type: "done"; report: string; transcript: string }
   | { type: "usage"; tokens: number | null; contextWindow: number; percent: number | null }
+  | {
+      type: "subagent";
+      candidateId: string;
+      phase: "queued" | "started" | "cache-hit" | "bundle" | "done" | "error";
+      detail?: string;
+    }
   | { type: "error"; message: string };
+
+export interface ContractAnalysisToolResult {
+  status: "bundle" | "cached" | "unresolved" | "budget_exhausted" | "error";
+  candidateId: string;
+  bundle?: unknown;
+  message?: string;
+}
+
+export interface ChildAnalysisRunner {
+  run(
+    request: RunRequest,
+    emit?: (event: RunEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<{
+    report: string;
+    transcript: string;
+  }>;
+}
+
+export interface ContractAnalysisToolConfig {
+  /** Candidate ids are server-issued opaque ids. The tool cannot supply an address/kind/code. */
+  candidateIds: ReadonlySet<string>;
+  analyze(
+    candidateId: string,
+    child: ChildAnalysisRunner,
+  ): Promise<ContractAnalysisToolResult>;
+}
 
 export interface RunRequest {
   /** initial user prompt (task instructions + context + question) */
@@ -68,15 +101,33 @@ export interface RunRequest {
   /** Kind-specific Discovery framing appended to the shared project system
    * prompt. Persistent cache keys must distinguish different suffixes. */
   systemPromptSuffix?: string;
+  /** Exact system profile. Unlike suffixes, this deliberately does not load the
+   * repository MEV SYSTEM.md (used by vulnerability-first Discovery). */
+  systemPromptOverride?: string;
   /** Requested reasoning level (ADR-013 §6). Clamped to model capability by the
    * harness; reasoning surfaces as `reasoning` events. Omit to use the default. */
   thinkingLevel?: ThinkingLevel;
   /** Offer the bounded read-only foundry `cast` tool (ADR-013 §8). */
   enableCast?: boolean;
+  /** One-level, server-authorized lazy contract analysis for Discovery. */
+  contractAnalysis?: ContractAnalysisToolConfig;
 }
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
-const persistentSessions = new Map<string, PiSession>();
+interface TurnContext {
+  request: RunRequest;
+  emit: (event: RunEvent) => void;
+  signal: AbortSignal;
+  permit: ProviderPermit;
+  toolLog: string[];
+}
+
+interface SessionHolder {
+  session: PiSession;
+  current?: TurnContext;
+}
+
+const persistentSessions = new Map<string, SessionHolder>();
 const MAX_PERSISTENT_SESSIONS = 24;
 
 /** 20-byte hex address, lowercased. Drops anything that isn't one. */
@@ -123,7 +174,7 @@ export function runAnalysis(
 ): Promise<void> {
   return scheduler.run(
     req.persistentKey,
-    () => (signal.aborted ? Promise.resolve() : execute(req, emit, signal)),
+    (permit) => (signal.aborted ? Promise.resolve() : execute(req, emit, signal, permit)),
     () => emit({ type: "queued" }),
   );
 }
@@ -146,15 +197,18 @@ async function execute(
   req: RunRequest,
   emit: (event: RunEvent) => void,
   signal: AbortSignal,
+  permit: ProviderPermit,
 ): Promise<void> {
   const cached = req.persistentKey ? persistentSessions.get(req.persistentKey) : undefined;
   if (cached) {
-    await runSessionTurn(cached, req.prompt, req, emit, signal, false, []);
+    await runSessionTurn(cached, req.prompt, req, emit, signal, permit, false);
     return;
   }
   const { authStorage, modelRegistry, settingsManager, cwd, agentDir } = await loadPiConfig();
-  const systemPrompt = loadSystemPrompt(cwd, agentDir);
-  const effectiveSystemPrompt = [systemPrompt, req.systemPromptSuffix].filter(Boolean).join("\n\n");
+  const systemPrompt = req.systemPromptOverride ?? loadSystemPrompt(cwd, agentDir);
+  const effectiveSystemPrompt = req.systemPromptOverride
+    ? req.systemPromptOverride
+    : [systemPrompt, req.systemPromptSuffix].filter(Boolean).join("\n\n");
 
   // Explicit model override from the top-bar picker. When absent,
   // createAgentSession resolves the settings default (project .pi/settings.json
@@ -171,15 +225,17 @@ async function execute(
     }
   }
 
-  const toolLog: string[] = [];
+  const holder = {} as SessionHolder;
+  const current = (): TurnContext | undefined => holder.current;
   const toolNames: string[] = [];
   const customTools = [];
   if (req.entries) {
     toolNames.push("get_function_code");
     customTools.push(
-      buildCodeLookupTool(req.entries, (detail) => {
-        toolLog.push(detail);
-        emit({ type: "tool", name: "get_function_code", detail });
+      buildCodeLookupTool(() => current()?.request.entries ?? [], (detail) => {
+        const turn = current();
+        turn?.toolLog.push(detail);
+        turn?.emit({ type: "tool", name: "get_function_code", detail });
       }),
     );
   }
@@ -187,9 +243,14 @@ async function execute(
     toolNames.push("flag_important_nodes");
     customTools.push(
       buildFlagImportantTool((addresses) => {
-        toolLog.push(`flagged ${addresses.length} important node(s)`);
-        emit({ type: "tool", name: "flag_important_nodes", detail: "recorded important nodes" });
-        emit({ type: "flagged", addresses });
+        const turn = current();
+        turn?.toolLog.push(`flagged ${addresses.length} important node(s)`);
+        turn?.emit({
+          type: "tool",
+          name: "flag_important_nodes",
+          detail: "recorded important nodes",
+        });
+        turn?.emit({ type: "flagged", addresses });
       }),
     );
   }
@@ -197,10 +258,15 @@ async function execute(
     toolNames.push("cast");
     customTools.push(
       buildCastTool((detail) => {
-        toolLog.push(detail);
-        emit({ type: "tool", name: "cast", detail });
+        const turn = current();
+        turn?.toolLog.push(detail);
+        turn?.emit({ type: "tool", name: "cast", detail });
       }),
     );
+  }
+  if (req.contractAnalysis) {
+    toolNames.push("request_contract_analysis");
+    customTools.push(buildContractAnalysisTool(current));
   }
 
   // Supplement the base config with the project's .pi resources: SYSTEM.md
@@ -262,35 +328,41 @@ async function execute(
   }
 
   if (req.persistentKey) {
-    persistentSessions.set(req.persistentKey, session);
+    holder.session = session;
+    persistentSessions.set(req.persistentKey, holder);
     while (persistentSessions.size > MAX_PERSISTENT_SESSIONS) {
       const oldest = persistentSessions.keys().next().value as string | undefined;
       if (!oldest) break;
-      persistentSessions.get(oldest)?.dispose();
+      persistentSessions.get(oldest)?.session.dispose();
       persistentSessions.delete(oldest);
     }
+  } else {
+    holder.session = session;
   }
 
   await runSessionTurn(
-    session,
+    holder,
     req.rehydrationPrompt ?? req.prompt,
     req,
     emit,
     signal,
+    permit,
     !req.persistentKey,
-    toolLog,
   );
 }
 
 async function runSessionTurn(
-  session: PiSession,
+  holder: SessionHolder,
   prompt: string,
   req: RunRequest,
   emit: (event: RunEvent) => void,
   signal: AbortSignal,
+  permit: ProviderPermit,
   dispose: boolean,
-  toolLog: string[],
 ): Promise<void> {
+  const session = holder.session;
+  const toolLog: string[] = [];
+  holder.current = { request: req, emit, signal, permit, toolLog };
   let report = "";
   const unsubscribe = session.subscribe((event) => {
     if (event.type !== "message_update") return;
@@ -327,11 +399,15 @@ async function runSessionTurn(
   } finally {
     signal.removeEventListener("abort", onAbort);
     unsubscribe();
+    holder.current = undefined;
     if (dispose) session.dispose();
   }
 }
 
-function buildCodeLookupTool(entries: FunctionEntry[], onLookup: (detail: string) => void) {
+function buildCodeLookupTool(
+  getEntries: () => FunctionEntry[],
+  onLookup: (detail: string) => void,
+) {
   return defineTool({
     name: "get_function_code",
     label: "Get function code",
@@ -346,6 +422,7 @@ function buildCodeLookupTool(entries: FunctionEntry[], onLookup: (detail: string
       ),
     }),
     execute: async (_id, params) => {
+      const entries = getEntries();
       const found = lookupFunction(entries, params.name, params.contract);
       const label = params.contract ? `${params.contract}.${params.name}` : params.name;
       onLookup(found ? `looked up ${label}` : `missed ${label}`);
@@ -397,6 +474,121 @@ function buildFlagImportantTool(onFlag: (addresses: string[]) => void) {
       };
     },
   });
+}
+
+function buildContractAnalysisTool(getTurn: () => TurnContext | undefined) {
+  return defineTool({
+    name: "request_contract_analysis",
+    label: "Request contract analysis",
+    description:
+      "Request one compact, reusable analysis bundle for a selected unresolved contract " +
+      "candidate. Pass only the opaque candidateId from the incident catalog. The server " +
+      "chooses the research profile and evidence; addresses, source, kind, and focus text " +
+      "cannot be supplied by this tool.",
+    parameters: Type.Object(
+      {
+        candidateId: Type.String({ description: "Opaque id from the selected candidate catalog" }),
+      },
+      { additionalProperties: false },
+    ),
+    execute: async (_id, params) => {
+      const turn = getTurn();
+      const config = turn?.request.contractAnalysis;
+      if (!turn || !config) {
+        return toolText({
+          status: "error",
+          candidateId: params.candidateId,
+          message: "contract analysis is not available for this turn",
+        } satisfies ContractAnalysisToolResult);
+      }
+      if (!config.candidateIds.has(params.candidateId)) {
+        turn.emit({
+          type: "subagent",
+          candidateId: params.candidateId,
+          phase: "error",
+          detail: "candidate is not selected or authorized",
+        });
+        return toolText({
+          status: "error",
+          candidateId: params.candidateId,
+          message: "candidate is not selected or authorized for this Discovery turn",
+        } satisfies ContractAnalysisToolResult);
+      }
+
+      turn.emit({ type: "subagent", candidateId: params.candidateId, phase: "started" });
+      turn.toolLog.push(`requested contract analysis ${params.candidateId}`);
+      const child: ChildAnalysisRunner = {
+        run: async (request, onEvent = () => {}, childSignal) => {
+          let report = "";
+          let transcript = "";
+          let failure: string | undefined;
+          // The parent model is paused while its tool runs. Reuse its permit so
+          // AGENT_MAX_CONCURRENCY=1 remains live and total provider pressure does
+          // not increase. Strip recursive/stateful tools from reusable children.
+          const signal = childSignal
+            ? AbortSignal.any([turn.signal, childSignal])
+            : turn.signal;
+          await turn.permit.runChild(() =>
+            execute(
+              {
+                ...request,
+                persistentKey: undefined,
+                rehydrationPrompt: undefined,
+                contractAnalysis: undefined,
+                enableCast: false,
+                collectImportant: false,
+              },
+              (event) => {
+                onEvent(event);
+                if (event.type === "done") {
+                  report = event.report;
+                  transcript = event.transcript;
+                } else if (event.type === "error") {
+                  failure = event.message;
+                }
+              },
+              signal,
+              turn.permit,
+            ),
+          );
+          if (!report) throw new Error(failure ?? "child analysis returned no bundle");
+          return { report, transcript };
+        },
+      };
+
+      try {
+        const result = await config.analyze(params.candidateId, child);
+        turn.emit({
+          type: "subagent",
+          candidateId: params.candidateId,
+          phase: result.status === "cached" ? "cache-hit" : result.status === "bundle" ? "bundle" : "done",
+          detail: result.message,
+        });
+        turn.emit({ type: "subagent", candidateId: params.candidateId, phase: "done" });
+        return toolText(result);
+      } catch (error) {
+        const message = (error as Error).message;
+        turn.emit({
+          type: "subagent",
+          candidateId: params.candidateId,
+          phase: "error",
+          detail: message,
+        });
+        return toolText({
+          status: "error",
+          candidateId: params.candidateId,
+          message,
+        } satisfies ContractAnalysisToolResult);
+      }
+    },
+  });
+}
+
+function toolText(value: unknown) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
+    details: {},
+  };
 }
 
 // ADR-013 §8: bounded READ-ONLY foundry cast. Only these subcommands run; any

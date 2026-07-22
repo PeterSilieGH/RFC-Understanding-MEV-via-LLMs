@@ -101,6 +101,10 @@ export interface ClassifiedTrace {
   functionName: string | null;
   functionSignature: string | null;
   inputs: Record<string, unknown> | null;
+  /** Compact raw call data retained for the normalized execution evidence. */
+  input: string | null;
+  output: string | null;
+  callType: string | null;
 }
 
 /** A decoded call trace: `abiName`, `functionSignature`, and `inputs` are present. */
@@ -135,10 +139,21 @@ export interface Receipt {
   effectiveGasPrice: bigint;
   cumulativeGasUsed: bigint;
   to: string | null;
+  status: number;
+  logs: ReceiptLog[];
+}
+
+export interface ReceiptLog {
+  address: string;
+  topics: string[];
+  data: string;
+  logIndex: number;
 }
 
 export interface Block {
+  chainId: string;
   blockNumber: number;
+  blockHash: string;
   blockTimestamp: number;
   miner: string;
   baseFeePerGas: bigint;

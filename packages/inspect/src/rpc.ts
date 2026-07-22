@@ -21,7 +21,9 @@ export async function fetchBlock(provider: JsonRpcProvider, blockNumber: number)
   const receipts = await fetchReceipts(provider, hexBlock, header);
 
   return {
+    chainId: "1",
     blockNumber,
+    blockHash: String(header.hash).toLowerCase(),
     blockTimestamp: hexToNumber(header.timestamp),
     miner: typeof header.miner === "string" ? header.miner.toLowerCase() : "",
     baseFeePerGas: hexToBigInt(header.baseFeePerGas ?? 0),
@@ -58,5 +60,29 @@ function parseReceipt(r: Record<string, unknown>): Receipt {
     effectiveGasPrice: hexToBigInt(r.effectiveGasPrice ?? 0),
     cumulativeGasUsed: hexToBigInt(r.cumulativeGasUsed ?? 0),
     to: typeof r.to === "string" ? r.to.toLowerCase() : null,
+    status: hexToNumber(r.status ?? 1),
+    logs: Array.isArray(r.logs)
+      ? r.logs.flatMap((value) => {
+          if (typeof value !== "object" || value === null) return [];
+          const log = value as Record<string, unknown>;
+          if (
+            typeof log.address !== "string" ||
+            typeof log.data !== "string" ||
+            !Array.isArray(log.topics)
+          ) {
+            return [];
+          }
+          return [
+            {
+              address: log.address.toLowerCase(),
+              data: log.data.toLowerCase(),
+              topics: log.topics
+                .filter((topic): topic is string => typeof topic === "string")
+                .map((topic) => topic.toLowerCase()),
+              logIndex: hexToNumber(log.logIndex ?? 0),
+            },
+          ];
+        })
+      : [],
   };
 }

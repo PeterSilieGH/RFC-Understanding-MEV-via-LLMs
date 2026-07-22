@@ -17,6 +17,21 @@ const configSchema = z.object({
   AGENT_API_PORT: z.coerce.number().int().default(3100),
   AGENT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(2),
   DISCO_API_PORT: z.coerce.number().int().default(2021),
+  DISCOVERY_RUNNER_PORT: z.coerce.number().int().default(2023),
+  // Monorepo-owned JSON-RPC adapter used by l2b discovery (ADR-016). It keeps
+  // log scans bounded and caches immutable snapshot code/storage reads.
+  RPC_GETLOGS_MAX_BLOCKS: z.coerce.number().int().positive().default(1_000_000),
+  RPC_GETLOGS_PAGE_SIZE: z.coerce.number().int().positive().default(100_000),
+
+  // trace-api is the only consumer of the networkless Panoramix sidecar. The
+  // client deadline exceeds the worker's default 30s process timeout so typed
+  // timeout responses can cross the Unix socket before the caller gives up.
+  DECOMPILER_API_SOCKET: z
+    .string()
+    .startsWith("/")
+    .endsWith(".sock")
+    .default("/run/decompiler-api/decompiler.sock"),
+  DECOMPILER_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(190_000).default(35_000),
 
   // Where synthetic trace-<hash8> discovery projects are written (ADR-008).
   // In compose this is a bind mount of the submodule's projects dir, so

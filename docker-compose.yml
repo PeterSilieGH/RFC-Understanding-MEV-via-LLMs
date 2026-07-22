@@ -109,6 +109,41 @@ services:
       postgres:
         condition: service_healthy
 
+  # Bytecode-only Panoramix worker (ADR-016). This service has no bridge or
+  # host network, receives no root env_file/secrets, and is reachable only
+  # through the shared Unix socket. trace-api is the sole socket consumer.
+  decompiler-api:
+    build:
+      context: .
+      dockerfile: apps/decompiler-api/Dockerfile
+    network_mode: none
+    user: "10001:10001"
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DECOMPILER_API_SOCKET: ${DECOMPILER_API_SOCKET:-/run/decompiler-api/decompiler.sock}
+      DECOMPILER_TIMEOUT_MS: ${DECOMPILER_TIMEOUT_MS:-30000}
+      DECOMPILER_MAX_CONCURRENCY: 1
+      DECOMPILER_CACHE_HOME: /tmp/panoramix-cache
+    volumes:
+      - decompiler_socket:/run/decompiler-api
+    tmpfs:
+      - /tmp/panoramix-cache:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m
+    cpus: "1.0"
+    mem_limit: 1g
+    pids_limit: 32
+    stop_grace_period: 5s
+    healthcheck:
+      test: ["CMD", "node", "dist/healthcheck.js"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
   trace-api:
     build:
       context: .
@@ -118,15 +153,24 @@ services:
     # are written into the bind-mounted submodule projects dir and must land
     # on the host owned by the user, untracked like UI-created projects
     user: "${DISCO_UID:-1000}:${DISCO_GID:-1000}"
+    # The decompiler socket is 0660 and owned by the isolated worker's group.
+    group_add:
+      - "10001"
     env_file:
       - path: .env
         required: false
     environment:
       DISCOVERY_PROJECTS_DIR: /projects
+      DECOMPILER_API_SOCKET: ${DECOMPILER_API_SOCKET:-/run/decompiler-api/decompiler.sock}
+      DECOMPILER_REQUEST_TIMEOUT_MS: ${DECOMPILER_REQUEST_TIMEOUT_MS:-35000}
     volumes:
       - ./l2beat/packages/config/src/projects:/projects
+      - decompiler_socket:/run/decompiler-api:ro
     depends_on:
-      - disco-api
+      disco-api:
+        condition: service_started
+      decompiler-api:
+        condition: service_healthy
 
   # DiscoUI backend: l2b ui from the pinned l2beat submodule via its own
   # Dockerfile (heavy first build - the whole l2beat monorepo). The image's
@@ -154,11 +198,14 @@ services:
       PATH: /tmp/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       # discovery reads *_FOR_DISCOVERY vars, falling back to plain
       # ETHERSCAN_API_KEY (supplied by env_file from the root .env)
-      ETHEREUM_RPC_URL_FOR_DISCOVERY: ${RPC_URL}
+      # RPC goes through trace-api's monorepo-owned snapshot cache/log paginator;
+      # source lookup remains l2b-owned through its normal explorer support.
+      ETHEREUM_RPC_URL_FOR_DISCOVERY: http://127.0.0.1:${TRACE_API_PORT:-2022}/internal/discovery-rpc
+      DISCOVERY_RUNNER_PORT: ${DISCOVERY_RUNNER_PORT:-2023}
       # bound the sockets discovery may hold open: the shared RPC node caps
       # concurrent connections and unbounded `l2b discover` runs starve every
       # other service. Inherited by spawned l2b children.
-      NODE_OPTIONS: --require /app/limit-rpc-sockets.cjs --require /app/bound-getlogs.cjs
+      NODE_OPTIONS: --require /app/limit-rpc-sockets.cjs
       RPC_MAX_SOCKETS: ${RPC_MAX_SOCKETS:-1000}
       # the node has no log index (a single 100k-block eth_getLogs chunk
       # takes ~11s idle), so proxy upgrade-history scans are bounded to the
@@ -168,7 +215,7 @@ services:
       - ./l2beat/packages/config/src/projects:/app/packages/config/src/projects
       - ./l2beat/packages/config/cache:/app/packages/config/cache
       - ./scripts/limit-rpc-sockets.cjs:/app/limit-rpc-sockets.cjs:ro
-      - ./scripts/bound-getlogs.cjs:/app/bound-getlogs.cjs:ro
+      - ./scripts/discovery-runner.cjs:/app/discovery-runner.cjs:ro
     tmpfs:
       - /app/packages/protocolbeat/build
     command:
@@ -178,6 +225,7 @@ services:
         mkdir -p /tmp/bin
         printf '#!/bin/sh\nexec node /app/packages/l2b/dist/cli.js "$$@"\n' > /tmp/bin/l2b
         chmod +x /tmp/bin/l2b
+        node /app/discovery-runner.cjs &
         exec node packages/l2b/dist/cli.js ui
 
   # DiscoUI frontend: our protocolbeat clone with the trace panel (ADR-004/005)
@@ -209,3 +257,5 @@ volumes:
     external: true
   # pgadmin's own state (saved connections, preferences) — droppable
   pgadmin_data:
+  # Private IPC transport between trace-api and the networkless decompiler.
+  decompiler_socket:

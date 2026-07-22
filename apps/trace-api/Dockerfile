@@ -4,10 +4,13 @@ RUN corepack enable
 WORKDIR /repo
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY packages/config ./packages/config
+COPY packages/db ./packages/db
+COPY packages/evidence ./packages/evidence
 COPY packages/flat-store ./packages/flat-store
 # @mev/rpc: the one shared JsonRpcProvider per process (ADR-011 §3).
 COPY packages/rpc ./packages/rpc
 COPY packages/trace-graph ./packages/trace-graph
+COPY apps/decompiler-api ./apps/decompiler-api
 COPY apps/trace-api ./apps/trace-api
 RUN pnpm install --frozen-lockfile --filter @mev/trace-api... \
     && pnpm --filter @mev/trace-api... build

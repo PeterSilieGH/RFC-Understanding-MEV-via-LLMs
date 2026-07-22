@@ -27,7 +27,25 @@ export type AgentStreamEvent =
   | { type: 'saved'; id: number }
   | { type: 'error'; message: string }
   | { type: 'warning'; address: string; message: string }
-  | { type: 'bundle'; bundle: ContractBundle }
+  | {
+      type: 'catalog'
+      fingerprint: string
+      snapshot: IncidentSnapshot
+    }
+  | {
+      type: 'candidate'
+      kind: ResearchKind
+      candidate: ContractCandidate
+    }
+  | { type: 'bundle'; candidateId?: string; bundle: ContractBundle }
+  | {
+      type: 'subagent'
+      candidateId: string
+      phase: 'queued' | 'started' | 'cache-hit' | 'bundle' | 'done' | 'error'
+      detail?: string
+      /** Included when the server has a newly persisted reusable bundle. */
+      bundle?: ContractBundle
+    }
   | { type: 'prepared' }
   | {
       type: 'progress'
@@ -71,6 +89,32 @@ export interface AgentModel extends AgentModelRef {
 }
 
 export type ResearchKind = 'mev' | 'vuln'
+
+export interface IncidentSnapshot {
+  blockNumber: number
+  blockHash: string
+  timestamp: number
+}
+
+export type CandidateSourceStatus =
+  | 'verified'
+  | 'decompiled'
+  | 'opaque'
+  | 'unverified'
+  | 'error'
+  | 'unresolved'
+
+export interface ContractCandidate {
+  id: string
+  artifactRef: string
+  address: string
+  name: string | null
+  runtimeCodehash: string
+  sourceStatus: CandidateSourceStatus
+  proxyType: string | null
+  implementationAddresses: string[]
+  snapshot: IncidentSnapshot
+}
 
 export interface ContractBundle {
   codehash: string
@@ -163,11 +207,6 @@ export function streamPrepareBundles(
   req: {
     project: string
     kinds: ResearchKind[]
-    contracts: BundleContractRef[]
-    /** incident gas fee + builder tip context (ADR-013 §7), when on a trace route */
-    gas?: string
-    model?: AgentModelRef
-    effort?: AgentEffort
   },
   signal?: AbortSignal,
 ): AsyncGenerator<AgentStreamEvent> {
@@ -179,7 +218,9 @@ export function streamDiscovery(
     project: string
     incident?: string
     kind: ResearchKind
+    catalogFingerprint?: string
     codehashes: string[]
+    candidateIds?: string[]
     question?: string
     traceTree?: string
     swaps?: string
@@ -187,6 +228,9 @@ export function streamDiscovery(
     gas?: string
     model?: AgentModelRef
     effort?: AgentEffort
+    /** Analyze selections are used only by lazy contract-analysis children. */
+    analyzeModel?: AgentModelRef
+    analyzeEffort?: AgentEffort
     reset?: boolean
   },
   signal?: AbortSignal,

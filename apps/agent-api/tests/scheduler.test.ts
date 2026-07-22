@@ -90,4 +90,75 @@ describe("analysis scheduler", () => {
     gate.resolve();
     await Promise.all([first, second]);
   });
+
+  it("hands a limit-one parent permit to its direct child without deadlocking", async () => {
+    const scheduler = new RunScheduler(1);
+    const order: string[] = [];
+
+    await scheduler.run(
+      "parent",
+      async (permit) => {
+        order.push("parent:provider");
+        await permit.runChild(async () => {
+          order.push("child:provider");
+          expect(scheduler.activeProviderSlots).toBe(1);
+        });
+        order.push("parent:resumed");
+      },
+      () => {},
+    );
+
+    expect(order).toEqual(["parent:provider", "child:provider", "parent:resumed"]);
+    expect(scheduler.activeProviderSlots).toBe(0);
+  });
+
+  it("never adds child capacity beyond the total provider limit", async () => {
+    const scheduler = new RunScheduler(2);
+    const childGate = deferred();
+    let children = 0;
+    let childPeak = 0;
+
+    const parents = ["one", "two"].map((key) =>
+      scheduler.run(
+        key,
+        async (permit) => {
+          await permit.runChild(async () => {
+            children++;
+            childPeak = Math.max(childPeak, children);
+            expect(scheduler.activeProviderSlots).toBeLessThanOrEqual(2);
+            await childGate.promise;
+            children--;
+          });
+        },
+        () => {},
+      ),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(childPeak).toBe(2);
+    childGate.resolve();
+    await Promise.all(parents);
+    expect(scheduler.activeProviderSlots).toBe(0);
+  });
+
+  it("rejects recursive child analysis on the same permit", async () => {
+    const scheduler = new RunScheduler(1);
+    let message = "";
+
+    await scheduler.run(
+      "parent",
+      async (permit) => {
+        await permit.runChild(async () => {
+          try {
+            await permit.runChild(async () => {});
+          } catch (error) {
+            message = (error as Error).message;
+          }
+        });
+      },
+      () => {},
+    );
+
+    expect(message).toContain("nested");
+  });
 });

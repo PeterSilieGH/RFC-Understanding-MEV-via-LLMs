@@ -1,4 +1,5 @@
 import type { DebugTransactionCall } from "./debugTrace.js";
+import { type FlowEdge, type ReceiptTokenTransfer, buildTraceFlowEdges } from "./flow.js";
 
 // The trace-specific graph model (ADR-005): a dedicated shape for dynamic
 // call flow, deliberately not a retrofit of DiscoUI's static ApiProjectResponse.
@@ -59,6 +60,16 @@ export interface TraceGraph {
   nodes: TraceCallNode[];
   edges: TraceEdge[];
   tokenTransfers: TokenTransfer[];
+  /** Versioned semantic overlays; older cached responses may omit this field. */
+  flowEdges?: FlowEdge[];
+}
+
+export interface TraceGraphOptions {
+  chainId?: string;
+  blockHash?: string;
+  receiptTokenTransfers?: readonly ReceiptTokenTransfer[];
+  /** Opt-in because duplicating edges in the base payload hurts massive traces. */
+  includeFlowEdges?: boolean;
 }
 
 const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f41f16df971d5f13c17b0ff9c2";
@@ -97,6 +108,7 @@ export function toTraceGraph(
   transactionHash: string,
   chain: string,
   rootCall: DebugTransactionCall,
+  options: TraceGraphOptions = {},
 ): TraceGraph {
   const nodes: TraceCallNode[] = [];
   const edges: TraceEdge[] = [];
@@ -163,7 +175,7 @@ export function toTraceGraph(
 
   visit(rootCall, "root", null, 0);
 
-  return {
+  const graph: TraceGraph = {
     transactionHash: transactionHash.toLowerCase(),
     chain,
     nodeCount: nodes.length,
@@ -172,4 +184,17 @@ export function toTraceGraph(
     edges,
     tokenTransfers,
   };
+  if (options.includeFlowEdges) {
+    graph.flowEdges = buildTraceFlowEdges({
+      transactionHash: graph.transactionHash,
+      chain,
+      chainId: options.chainId,
+      blockHash: options.blockHash,
+      nodes,
+      edges,
+      tokenTransfers,
+      receiptTokenTransfers: options.receiptTokenTransfers,
+    });
+  }
+  return graph;
 }

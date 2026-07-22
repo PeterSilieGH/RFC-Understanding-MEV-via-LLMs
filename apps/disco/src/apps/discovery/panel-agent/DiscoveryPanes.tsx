@@ -24,6 +24,7 @@ import {
   bundlePreparationKey,
   EMPTY_PREPARATION,
   ensureBundlePreparation,
+  type PreparedCandidate,
   useBundlePreparationStore,
 } from './bundle-preparation-store'
 import { useAgentModelStore } from './model-store'
@@ -48,15 +49,14 @@ export function DiscoveryPanes(props: { project: string }) {
   const { txHash } = useParams()
   const research = useResearchStore()
   const kinds = activeResearchKinds(research)
-  const model = useAgentModelStore((state) => state.analyzeModel)
-  const effort = useAgentModelStore((state) => state.analyzeEffort)
   const addBundleMarks = useAgentMarksStore((state) => state.addBundleMarks)
-  const preparationInput = { project, txHash, kinds, model, effort }
+  const preparationInput = { project, kinds }
   const preparationKey = bundlePreparationKey(preparationInput)
   const preparation = useBundlePreparationStore(
     (state) => state.jobs[preparationKey] ?? EMPTY_PREPARATION,
   )
-  const { bundles, warnings, error, completed, total, phase } = preparation
+  const { bundles, candidates, fingerprint, warnings, error, completed, total, phase } =
+    preparation
   const preparing = preparation.status === 'preparing'
 
   // ADR-013 §3: which kind's pane is shown, and whether it is collapsed. The
@@ -148,6 +148,8 @@ export function DiscoveryPanes(props: { project: string }) {
           txHash={txHash}
           kind={activeKind}
           bundles={bundles.filter((bundle) => bundle.kind === activeKind)}
+          candidates={candidates.filter((candidate) => candidate.kind === activeKind)}
+          catalogFingerprint={fingerprint}
           preparing={preparing}
         />
       )}
@@ -160,10 +162,9 @@ function preparationMessage(
   completed: number,
   total: number,
 ): string {
-  if (phase === 'loading') return 'Loading contract references…'
-  if (phase === 'resolving') return 'Resolving contract identities and cache coverage…'
-  if (phase === 'queued') return `Queued behind another analysis (${completed}/${total})…`
-  return `Preparing reusable bundles (${completed}/${total} contracts complete)…`
+  if (phase === 'loading') return 'Loading incident catalog…'
+  if (phase === 'complete') return 'Catalog ready.'
+  return `Resolving cached bundles and candidates (${completed}/${total})…`
 }
 
 function DiscoveryKind(props: {
@@ -172,17 +173,24 @@ function DiscoveryKind(props: {
   txHash: string | undefined
   kind: ResearchKind
   bundles: ContractBundle[]
+  candidates: PreparedCandidate[]
+  catalogFingerprint: string | null
   preparing: boolean
 }) {
-  const { project, incident, txHash, kind, bundles, preparing } = props
+  const { project, incident, txHash, kind, bundles, candidates, catalogFingerprint, preparing } =
+    props
   const model = useAgentModelStore((state) => state.discoverModel)
   const effort = useAgentModelStore((state) => state.discoverEffort)
+  const analyzeModel = useAgentModelStore((state) => state.analyzeModel)
+  const analyzeEffort = useAgentModelStore((state) => state.analyzeEffort)
   const models = useQuery({ queryKey: ['agent-models'], queryFn: getAgentModels })
   const stored = useQuery({
     queryKey: ['agent-discovery-session', project, incident, kind],
     queryFn: () => getDiscoverySession(project, incident, kind),
   })
   const [excluded, setExcluded] = useState<string[]>([])
+  const [excludedCandidates, setExcludedCandidates] = useState<string[]>([])
+  const [subagents, setSubagents] = useState<Record<string, string>>({})
   const [selectionDirty, setSelectionDirty] = useState(false)
   const [selectionOpen, setSelectionOpen] = useState(false)
   const [liveUsage, setLiveUsage] = useState<{
@@ -201,6 +209,13 @@ function DiscoveryKind(props: {
   const conversationRef = useRef<HTMLDivElement | null>(null)
 
   const selected = bundles.filter((bundle) => !excluded.includes(bundle.codehash))
+  const selectedCandidates = candidates.filter(
+    (candidate) => !excludedCandidates.includes(candidate.id),
+  )
+  // Deselecting a candidate removes both its context and the parent's authority
+  // to request its analysis (ADR-016 §3). At least one bundle or candidate must
+  // remain selected to Discover.
+  const selectedCount = selected.length + selectedCandidates.length
   const chosenModel = models.data?.models.find(
     (candidate) =>
       candidate.provider === (model?.provider ?? models.data?.default?.provider) &&
@@ -221,7 +236,7 @@ function DiscoveryKind(props: {
 
   const run = useCallback(
     async (followup?: string) => {
-      if (running || selected.length === 0) return
+      if (running || selectedCount === 0) return
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
@@ -230,6 +245,7 @@ function DiscoveryKind(props: {
       setError(null)
       setLive('')
       setReasoning('')
+      setSubagents({})
       setSelectionOpen(false)
       let succeeded = true
       try {
@@ -244,12 +260,16 @@ function DiscoveryKind(props: {
             incident,
             kind,
             codehashes: selected.map((bundle) => bundle.codehash),
+            candidateIds: selectedCandidates.map((candidate) => candidate.id),
+            catalogFingerprint: catalogFingerprint ?? undefined,
             question: followup,
             traceTree,
             swaps,
             gas,
             model,
             effort,
+            analyzeModel,
+            analyzeEffort,
           },
           controller.signal,
         )
@@ -283,7 +303,15 @@ function DiscoveryKind(props: {
           setReasoning((value) => value + event.text)
           setQueued(false)
         } else if (event.type === 'queued') setQueued(true)
-        else if (event.type === 'usage') {
+        else if (event.type === 'subagent') {
+          setQueued(false)
+          setSubagents((current) => ({
+            ...current,
+            [event.candidateId]: event.detail
+              ? `${event.phase} · ${event.detail}`
+              : event.phase,
+          }))
+        } else if (event.type === 'usage') {
           setLiveUsage({
             tokens: event.tokens,
             contextWindow: event.contextWindow,
@@ -295,7 +323,22 @@ function DiscoveryKind(props: {
         }
       }
     },
-    [project, incident, kind, txHash, running, selected.map((b) => b.codehash).join(','), model?.provider, model?.id, effort],
+    [
+      project,
+      incident,
+      kind,
+      txHash,
+      running,
+      selected.map((b) => b.codehash).join(','),
+      selectedCandidates.map((c) => c.id).join(','),
+      catalogFingerprint,
+      model?.provider,
+      model?.id,
+      effort,
+      analyzeModel?.provider,
+      analyzeModel?.id,
+      analyzeEffort,
+    ],
   )
 
   const submitFollowup = () => {
@@ -322,7 +365,7 @@ function DiscoveryKind(props: {
         <Button
           size="small"
           variant="solid"
-          disabled={preparing || running || selected.length === 0}
+          disabled={preparing || running || selectedCount === 0}
           onClick={() => {
             if (turns.length > 0 && !selectionOpen) {
               setSelectionOpen(true)
@@ -347,35 +390,78 @@ function DiscoveryKind(props: {
         </div>
       </div>
 
-      {/* ADR-013 §5: every bundle is visible — no inner scrollbar. */}
+      {/* ADR-013 §5 / ADR-016 §3: every cached bundle and unresolved candidate is
+          visible and independently deselectable — no inner scrollbar. */}
       {showBundleSelection && <div className="border border-coffee-600">
-        {bundles.length === 0 && !preparing ? (
-          <p className="p-2 text-coffee-400 text-xs italic">No {kind} bundles available.</p>
-        ) : bundles.map((bundle) => {
-          const checked = !excluded.includes(bundle.codehash)
-          return (
-            <button
-              type="button"
-              key={bundle.codehash}
-              className="flex w-full items-start gap-2 border-coffee-700 border-b p-2 text-left text-xs hover:bg-coffee-700"
-              onClick={() => {
-                setSelectionDirty(true)
-                setExcluded((current) =>
-                  checked
-                    ? [...current, bundle.codehash]
-                    : current.filter((hash) => hash !== bundle.codehash),
-                )
-              }}
-            >
-              <Checkbox checked={checked} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-bold">{bundle.role}</span>
-                <span className="text-coffee-400">{bundle.tokenEstimate} tokens · {bundle.addresses[0]}</span>
-              </span>
-            </button>
-          )
-        })}
+        {bundles.length === 0 && candidates.length === 0 && !preparing ? (
+          <p className="p-2 text-coffee-400 text-xs italic">No {kind} bundles or candidates available.</p>
+        ) : (
+          <>
+            {bundles.map((bundle) => {
+              const checked = !excluded.includes(bundle.codehash)
+              return (
+                <button
+                  type="button"
+                  key={bundle.codehash}
+                  className="flex w-full items-start gap-2 border-coffee-700 border-b p-2 text-left text-xs hover:bg-coffee-700"
+                  onClick={() => {
+                    setSelectionDirty(true)
+                    setExcluded((current) =>
+                      checked
+                        ? [...current, bundle.codehash]
+                        : current.filter((hash) => hash !== bundle.codehash),
+                    )
+                  }}
+                >
+                  <Checkbox checked={checked} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-bold">{bundle.role}</span>
+                    <span className="text-coffee-400">{bundle.tokenEstimate} tokens · {bundle.addresses[0]}</span>
+                  </span>
+                </button>
+              )
+            })}
+            {candidates.map((candidate) => {
+              const checked = !excludedCandidates.includes(candidate.id)
+              return (
+                <button
+                  type="button"
+                  key={candidate.id}
+                  className="flex w-full items-start gap-2 border-coffee-700 border-b p-2 text-left text-xs hover:bg-coffee-700"
+                  onClick={() => {
+                    setSelectionDirty(true)
+                    setExcludedCandidates((current) =>
+                      checked
+                        ? [...current, candidate.id]
+                        : current.filter((id) => id !== candidate.id),
+                    )
+                  }}
+                >
+                  <Checkbox checked={checked} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">
+                      {candidate.name ?? 'Unnamed contract'}{' '}
+                      <span className="text-coffee-500 italic">· analyze on demand</span>
+                    </span>
+                    <span className="text-coffee-400">{candidate.sourceStatus} · {candidate.address}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </>
+        )}
       </div>}
+
+      {running && Object.keys(subagents).length > 0 && (
+        <div className="border border-coffee-700 bg-coffee-900 p-2 text-[11px]">
+          <p className="mb-1 text-coffee-400 uppercase">Contract analysis</p>
+          {Object.entries(subagents).map(([candidateId, status]) => (
+            <p key={candidateId} className="truncate text-coffee-300" title={`${candidateId}: ${status}`}>
+              <span className="text-coffee-500">{candidateId.slice(0, 10)}…</span> {status}
+            </p>
+          ))}
+        </div>
+      )}
 
       {queued && <span className="text-coffee-400 text-xs">Queued behind another agent run…</span>}
       {error && <pre className="whitespace-pre-wrap text-aux-red text-xs">{error}</pre>}

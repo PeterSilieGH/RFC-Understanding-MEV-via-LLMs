@@ -4,6 +4,8 @@ import type { ApiAddressType } from '../../../../api/types'
 import { ADDRESS_ICON_COMPONENTS } from '../../../../components/AddressIcon'
 import { IconInitial } from '../../../../icons/IconInitial'
 import { useGlobalSettingsStore } from '../../store/global-settings-store'
+import { useFlowGeometry } from '../flow-overlay/FlowOverlayView'
+import type { FlowVisualEdge } from '../flow-overlay/geometry'
 import type { Node } from '../store/State'
 import { useStore, useStoreApi } from '../store/store'
 import {
@@ -92,6 +94,7 @@ interface DrawData {
   enableDimming: boolean
   markUnreachableEntries: boolean
   anyNodeSelected: boolean
+  flowGeometry: readonly FlowVisualEdge[]
 }
 
 interface VisibleField {
@@ -633,6 +636,7 @@ interface Buffers {
   footerText: PassBuffer
   icon: PassBuffer
   connections: PassBuffer
+  flows: PassBuffer
   overlap: PassBuffer
 }
 
@@ -646,6 +650,7 @@ interface PassCounts {
   footerText: number
   icon: number
   connections: number
+  flows: number
   overlap: number
 }
 
@@ -671,6 +676,7 @@ class WebGLRenderer {
     footerText: 0,
     icon: 0,
     connections: 0,
+    flows: 0,
     overlap: 0,
   }
 
@@ -744,6 +750,7 @@ class WebGLRenderer {
     const footerText = this.createTextPassBuffer(cornerQuad)
     const icon = this.createTextPassBuffer(cornerQuad)
     const connections = this.createLinePassBuffer()
+    const flows = this.createLinePassBuffer()
     const overlap = this.createLinePassBuffer()
 
     gl.bindVertexArray(null)
@@ -756,6 +763,7 @@ class WebGLRenderer {
       footerText,
       icon,
       connections,
+      flows,
       overlap,
     }
   }
@@ -865,6 +873,7 @@ class WebGLRenderer {
       transform,
       res,
     )
+    this.drawLinePass(this.buffers.flows, this.counts.flows, transform, res)
     gl.enable(gl.DEPTH_TEST)
     this.drawRoundPass(transform, res)
     this.drawIconPass(transform, res)
@@ -906,6 +915,7 @@ class WebGLRenderer {
     this.counts.fieldText = this.buildFieldText(renderNodes)
     this.counts.footerText = this.buildFooterText(renderNodes)
     this.counts.connections = this.buildConnections(renderNodes, data)
+    this.counts.flows = this.buildFlows(data.flowGeometry)
     this.counts.overlap = this.buildOverlap(renderNodes)
   }
 
@@ -1360,6 +1370,40 @@ class WebGLRenderer {
     return this.upload(this.buffers.overlap.data, buf, v, LINE_STRIDE_F)
   }
 
+  private buildFlows(edges: readonly FlowVisualEdge[]): number {
+    if (edges.length === 0) return 0
+    let maxVertices = 0
+    for (const visual of edges) {
+      maxVertices += estimateFlowStrokeVertices(visual) + 3
+    }
+    const buf = this.ensureLine(maxVertices)
+    let v = 0
+    for (const visual of edges) {
+      const color: RGBA =
+        visual.edge.status === 'attempted'
+          ? AUX_RED
+          : visual.edge.layer === 'control'
+            ? [0x38 / 255, 0xbd / 255, 0xf8 / 255, 1]
+            : AUX_ORANGE
+      v += emitFlowStroke(
+        buf,
+        v,
+        visual,
+        3,
+        color,
+      )
+      v += emitArrowhead(
+        buf,
+        v,
+        visual.controlB,
+        visual.to,
+        8,
+        color,
+      )
+    }
+    return this.upload(this.buffers.flows.data, buf, v, LINE_STRIDE_F)
+  }
+
   // ==========================================================================
   // DRAW PHASE — runs every frame. Sets uniforms (the transform changes),
   // binds the pre-built VAO/texture, issues a single draw call. No CPU work
@@ -1478,6 +1522,7 @@ class WebGLRenderer {
       this.buffers.footerText,
       this.buffers.icon,
       this.buffers.connections,
+      this.buffers.flows,
       this.buffers.overlap,
     ]) {
       gl.deleteBuffer(pass.data)
@@ -1739,6 +1784,74 @@ function estimateBezierStrokeVertices(
   return dashQuads * 6
 }
 
+function emitFlowStroke(
+  out: Float32Array,
+  startVertex: number,
+  visual: FlowVisualEdge,
+  width: number,
+  color: RGBA,
+): number {
+  if (visual.edge.status !== 'attempted') {
+    return emitSolidBezierStroke(
+      out,
+      startVertex,
+      visual.from.x,
+      visual.from.y,
+      visual.controlA.x,
+      visual.controlA.y,
+      visual.controlB.x,
+      visual.controlB.y,
+      visual.to.x,
+      visual.to.y,
+      width,
+      color,
+    )
+  }
+  const points = sampleBezier(
+    visual.from.x,
+    visual.from.y,
+    visual.controlA.x,
+    visual.controlA.y,
+    visual.controlB.x,
+    visual.controlB.y,
+    visual.to.x,
+    visual.to.y,
+    BEZIER_SEGMENTS_DASHED,
+  )
+  return emitDashedRibbon(
+    out,
+    startVertex,
+    points,
+    width,
+    color,
+    DASH_ON_WORLD,
+    DASH_OFF_WORLD,
+  )
+}
+
+function estimateFlowStrokeVertices(visual: FlowVisualEdge): number {
+  if (visual.edge.status !== 'attempted') return BEZIER_SEGMENTS_SOLID * 6
+  const length =
+    Math.hypot(
+      visual.controlA.x - visual.from.x,
+      visual.controlA.y - visual.from.y,
+    ) +
+    Math.hypot(
+      visual.controlB.x - visual.controlA.x,
+      visual.controlB.y - visual.controlA.y,
+    ) +
+    Math.hypot(
+      visual.to.x - visual.controlB.x,
+      visual.to.y - visual.controlB.y,
+    )
+  return (
+    (Math.ceil(length / (DASH_ON_WORLD + DASH_OFF_WORLD)) +
+      BEZIER_SEGMENTS_DASHED +
+      2) *
+    6
+  )
+}
+
 // Hot path. Inlined to skip ~100 function calls per connection
 // (16 ribbon quads + 96 writeLineVertex calls) and the intermediate
 // Array<{x,y}> from sampleBezier. Writes straight into the line buffer.
@@ -1955,6 +2068,43 @@ function emitRibbonQuad(
   return 6
 }
 
+function emitArrowhead(
+  out: Float32Array,
+  startVertex: number,
+  before: { x: number; y: number },
+  tip: { x: number; y: number },
+  size: number,
+  color: RGBA,
+): number {
+  const dx = tip.x - before.x
+  const dy = tip.y - before.y
+  const length = Math.hypot(dx, dy)
+  if (length < 1e-9) return 0
+  const ux = dx / length
+  const uy = dy / length
+  const px = -uy
+  const py = ux
+  const baseX = tip.x - ux * size
+  const baseY = tip.y - uy * size
+  const half = size * 0.55
+  const points = [
+    tip,
+    { x: baseX + px * half, y: baseY + py * half },
+    { x: baseX - px * half, y: baseY - py * half },
+  ]
+  let offset = startVertex * LINE_STRIDE_F
+  for (const point of points) {
+    out[offset] = point.x
+    out[offset + 1] = point.y
+    out[offset + 2] = color[0]
+    out[offset + 3] = color[1]
+    out[offset + 4] = color[2]
+    out[offset + 5] = color[3]
+    offset += LINE_STRIDE_F
+  }
+  return 3
+}
+
 // Walks a polyline, emitting ribbon quads only inside "on" portions of a
 // dash pattern. Arc length is accumulated globally so the pattern continues
 // smoothly across segment boundaries.
@@ -2097,6 +2247,7 @@ function buildDrawData(
   enableDimming: boolean,
   highlightOverlapping: boolean,
   markUnreachableEntries: boolean,
+  flowGeometry: readonly FlowVisualEdge[],
 ): DrawData {
   const hiddenSet = new Set(hidden)
   const selectedSet = new Set(selected)
@@ -2163,6 +2314,7 @@ function buildDrawData(
     enableDimming,
     markUnreachableEntries,
     anyNodeSelected,
+    flowGeometry,
   }
 }
 
@@ -2219,6 +2371,7 @@ export function NodesAndConnectionsWebGL() {
   const markUnreachableEntries = useGlobalSettingsStore(
     (s) => s.markUnreachableEntries,
   )
+  const { geometry: flowGeometry } = useFlowGeometry()
 
   const data = useMemo(
     () =>
@@ -2229,6 +2382,7 @@ export function NodesAndConnectionsWebGL() {
         enableDimming,
         highlightOverlapping,
         markUnreachableEntries,
+        flowGeometry,
       ),
     [
       nodes,
@@ -2237,6 +2391,7 @@ export function NodesAndConnectionsWebGL() {
       enableDimming,
       highlightOverlapping,
       markUnreachableEntries,
+      flowGeometry,
     ],
   )
   dataRef.current = data

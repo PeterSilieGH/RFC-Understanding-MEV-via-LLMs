@@ -2,6 +2,11 @@ import clsx from 'clsx'
 import { useEffect, useRef } from 'react'
 import { useDockingStore } from '../../multi-view/store'
 import { useSearchStore } from '../../search/store'
+import {
+  FlowOverlayDom,
+  FlowOverlayLegend,
+  FlowOverlayWebGLDetails,
+} from '../flow-overlay/FlowOverlayView'
 import { useStore } from '../store/store'
 import { useDesktopControls } from './hooks/useDesktopControls'
 import { useTouchControls } from './hooks/useTouchControls'
@@ -109,15 +114,19 @@ export function Viewport({ renderer: rendererOverride }: ViewportProps = {}) {
     >
       {renderer === 'dom' ? (
         <ScalableView ref={viewRef}>
+          <FlowOverlayDom />
           <NodesAndConnections />
         </ScalableView>
       ) : (
         <>
-          <ScalableView ref={viewRef} />
+          <ScalableView ref={viewRef}>
+            <FlowOverlayWebGLDetails />
+          </ScalableView>
           <NodesAndConnectionsWebGL />
         </>
       )}
       <MouseSelection />
+      <FlowOverlayLegend />
     </div>
   )
 }

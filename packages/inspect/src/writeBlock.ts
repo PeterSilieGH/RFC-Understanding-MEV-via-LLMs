@@ -11,8 +11,10 @@
 // (arbitrage_swaps / sandwiched_swaps cascade from their parents).
 import { randomUUID } from "node:crypto";
 import { pool } from "@mev/db";
+import { PostgresEvidenceStore } from "@mev/evidence";
 import type { PoolClient } from "pg";
 import type { InspectResult } from "./inspectBlock.js";
+import { buildExecutionArtifacts, buildFlowArtifacts } from "./evidence.js";
 import { protocolTraceRepr, protocolWireValue } from "./types.js";
 
 const MAX_PARAMS = 60000;
@@ -65,6 +67,16 @@ export async function writeBlock(result: InspectResult): Promise<void> {
     throw err;
   } finally {
     client.release();
+  }
+  // Normalized immutable evidence is written only after the pipeline block
+  // transaction commits. Each content-addressed upsert is idempotent, so a
+  // partial evidence write remains safely retryable on reinspection.
+  const evidence = new PostgresEvidenceStore();
+  for (const artifact of buildExecutionArtifacts(result)) {
+    await evidence.putExecutionArtifact(artifact);
+  }
+  for (const artifact of buildFlowArtifacts(result)) {
+    await evidence.putFlowArtifact(artifact);
   }
 }
 
