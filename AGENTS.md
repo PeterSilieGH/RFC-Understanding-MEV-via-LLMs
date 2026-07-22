@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Coding Agents when working with code in this repository.
 
 ## Project Goal
 
@@ -54,6 +54,19 @@ cd mev-monitor && ./restore.sh   # idempotent: postgres container, mev-inspect-p
 ```
 
 It needs an external RPC node with `trace_block` support (reth/Erigon — plain geth won't work), default `http://localhost:8504`.
+
+## Development, testing & verification
+
+- **Monorepo layout.** Services live in `apps/` (Express APIs, Vite frontends, `agent-api`), shared libraries in `packages/` (`@mev/*`). pnpm workspaces + Turborepo; TypeScript strict + ESM; Biome for lint/format. Build a package with its own script (`tsc` for the APIs, `vite build` for the frontends) or `pnpm turbo build`.
+- **Everything runs in `docker compose`, and the containers run *built* code.** After changing a service's source you must rebuild and restart its image for the change to reach the running stack: `docker compose build <svc> && docker compose up -d <svc>`. Vite dev servers exist, but the disco dev proxy does **not** route `/api/agent` (nginx does that inside `disco-web`), so a container rebuild is the faithful path for any agent-touching change. `agent-api` bundles foundry `cast`; other on-chain access uses `RPC_URL` from the root `.env` (a loopback SSH tunnel — confirm it is up before verifying chain-dependent behaviour).
+- **Static checks are not verification.** `npx tsc --noEmit` per package and `npx biome check <files>` (`--write` to format) catch types/format only. Biome is scoped to `apps/`+`packages/` — a repo-wide `biome check .` breaks on the l2beat submodule's Biome 2.x config. Unit tests are vitest (legacy root `tests/`, `pnpm vitest run`).
+- **End-to-end verification = runtime observation of the running app**, not passing tests. Bring the stack up (`docker compose up -d`), rebuild the containers you changed, then drive the real surface: the GUI through the Playwright suite in `e2e/` (`playwright.config.ts`; system chromium at `/usr/bin/chromium`; `npx playwright test [-g "name"]`) and service APIs by curling their socket (`agent-api` NDJSON on :3100, `explorer-api` :3000, `trace-api` :2022). `e2e/helpers.ts` pulls real inspected txs from Postgres and the specs `test.skip` when data or the RPC node is absent — **extend those specs** for new UI/flows rather than writing throwaway scripts.
+
+## Version control
+
+- **Big work packages go on a dedicated feature branch and land via a merge request** — do not commit large efforts straight onto a long-lived branch. Record the decision as an ADR in `docs/adr/` plus a work-package doc in `docs/design/` *before* implementing, and verify (above) before opening the MR.
+- Commit and push **only when asked**. End commit messages with the `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` trailer.
+- **Never commit submodule state** (`l2beat`) or the pi agent dir, and never commit UI-created `trace-*` discovery projects or other untracked submodule files (they may hold local `.env`s).
 
 ## Architecture Essentials
 
