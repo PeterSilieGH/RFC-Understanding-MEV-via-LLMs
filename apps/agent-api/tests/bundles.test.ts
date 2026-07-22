@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { contractCodehash, estimateTokens, parseGeneratedBundles } from "../src/bundles.js";
+import {
+  contractCodehash,
+  estimateTokens,
+  opaqueUnverifiedBundle,
+  parseGeneratedBundles,
+} from "../src/bundles.js";
 
 describe("ADR-012 typed bundles", () => {
   it("uses a deterministic code identity when runtime codehash is unavailable", () => {
@@ -62,5 +67,12 @@ describe("ADR-012 typed bundles", () => {
 
   it("estimates nonzero context cost", () => {
     expect(estimateTokens("grounded evidence")).toBeGreaterThan(0);
+  });
+
+  it("represents unverified runtime code without inventing entry points", () => {
+    const bundle = opaqueUnverifiedBundle("mev");
+    expect(bundle.role).toBe("Unverified runtime contract");
+    expect(bundle.entryPoints).toEqual([]);
+    expect(bundle.notes).toContain("evidence");
   });
 });

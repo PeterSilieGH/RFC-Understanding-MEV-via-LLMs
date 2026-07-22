@@ -10,7 +10,8 @@ export const ANALYZE_CODE_TASK = [
   "the MEV-relevant surface (swaps, price reads, callbacks, flash-loan hooks,",
   "access control, reentrancy, slippage), and each contract's likely role",
   "(searcher/bot, victim, AMM/DEX, lending market, infrastructure). Ground every",
-  "conclusion in named function signatures.",
+  "conclusion in named function signatures. When the supplied code cannot answer",
+  "an on-chain question, use the bounded read-only cast tool and cite its result.",
 ].join(" ");
 
 export const ANALYZE_VALUE_TASK = [
@@ -19,7 +20,8 @@ export const ANALYZE_VALUE_TASK = [
   "reserves, prices, ownership/roles, configuration — and whether the values are",
   "consistent with an arbitrage, sandwich, liquidation, JIT-liquidity, or benign",
   "interaction. Ground every conclusion in named state fields. If contract source",
-  "was also submitted, use get_function_code for bodies you need.",
+  "was also submitted, use get_function_code for bodies you need. Use the bounded",
+  "read-only cast tool for missing on-chain facts and cite its result.",
 ].join(" ");
 
 export const BUILD_PREVIEW_TASK = [

@@ -143,6 +143,7 @@ function AnalyzeRunner(props: {
   const abortRef = useRef<AbortController | null>(null)
   const addMarks = useAgentMarksStore((s) => s.addMarks)
   const model = useAgentModelStore((s) => s.analyzeModel)
+  const effort = useAgentModelStore((s) => s.analyzeEffort)
 
   const targets = useQuery({
     queryKey: ['agent-targets', project, [...addresses].sort().join(',')],
@@ -179,6 +180,7 @@ function AnalyzeRunner(props: {
             codeContext,
             valueContext,
             model,
+            effort,
           },
           controller.signal,
         )
@@ -225,7 +227,7 @@ function AnalyzeRunner(props: {
         }
       }
     },
-    [addresses, project, question, run.running, addMarks, model],
+    [addresses, project, question, run.running, addMarks, model, effort],
   )
 
   const disabled = addresses.length === 0 || run.running

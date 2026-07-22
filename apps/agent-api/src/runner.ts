@@ -1,7 +1,7 @@
 // Embeds the pi SDK: one in-memory session per analysis run. Tools are opt-in:
 // get_function_code (when parsed source was submitted — the model pulls
 // individual function bodies from that source instead of us shipping whole
-// contracts) and, for Discovery runs, a bounded READ-ONLY foundry `cast` tool
+// contracts) and, for Analyze/Discovery runs, a bounded READ-ONLY foundry `cast` tool
 // (ADR-013 §8 — the one filesystem/subprocess exception to the ADR-006/009 "no
 // bash tools" rule; strictly allowlisted read subcommands via execFile, never a
 // shell). No arbitrary filesystem or bash access otherwise.
@@ -34,7 +34,7 @@ const execFileAsync = promisify(execFile);
 // Mirrors @earendil-works/pi-agent-core's ThinkingLevel (not re-exported by the
 // coding-agent package we depend on). setThinkingLevel clamps to the model's
 // real capability, so requesting a level a model can't do degrades to "off".
-type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type RunEvent =
   | { type: "delta"; text: string }
@@ -43,6 +43,7 @@ export type RunEvent =
   | { type: "queued" }
   | { type: "flagged"; addresses: string[] }
   | { type: "done"; report: string; transcript: string }
+  | { type: "usage"; tokens: number | null; contextWindow: number; percent: number | null }
   | { type: "error"; message: string };
 
 export interface RunRequest {
@@ -318,6 +319,8 @@ async function runSessionTurn(
     } else {
       const transcript = buildTranscript(req.transcriptHeader, toolLog, report);
       emit({ type: "done", report: report.trim(), transcript });
+      const usage = session.getContextUsage();
+      if (usage) emit({ type: "usage", ...usage });
     }
   } catch (err) {
     emit({ type: "error", message: (err as Error).message });
@@ -439,7 +442,7 @@ function buildCastTool(onCall: (detail: string) => void) {
     label: "cast (read-only)",
     description:
       "Run a READ-ONLY foundry `cast` command against the configured mainnet RPC to " +
-      "retrieve on-chain facts you cannot get from the supplied bundles — storage slots, " +
+      "retrieve on-chain facts you cannot get from the supplied evidence — storage slots, " +
       "balances, eth_call results, code, token metadata, tx/receipt/block data. Pass the " +
       'cast arguments as a list, e.g. ["call","0xUniPair","getReserves()(uint112,uint112,uint32)"] ' +
       'or ["storage","0xToken","0x2"]. The --rpc-url is supplied automatically; do not add it. ' +

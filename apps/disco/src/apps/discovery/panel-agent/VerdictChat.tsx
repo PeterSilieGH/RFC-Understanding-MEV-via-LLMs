@@ -6,6 +6,7 @@
 // in that same evidence. Answers are ephemeral (never persisted as runs).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  type AgentEffort,
   type AgentModelRef,
   type AgentStreamEvent,
   streamVerdictChat,
@@ -25,8 +26,9 @@ export function VerdictChat(props: {
   project: string
   txHash: string | undefined
   model: AgentModelRef | undefined
+  effort: AgentEffort | undefined
 }) {
-  const { project, txHash, model } = props
+  const { project, txHash, model, effort } = props
   const [turns, setTurns] = useState<Turn[]>([])
   const [input, setInput] = useState('')
   const [running, setRunning] = useState(false)
@@ -77,6 +79,7 @@ export function VerdictChat(props: {
         {
           project,
           model,
+          effort,
           question,
           history,
           traceTree: ctx?.traceTree,
@@ -114,7 +117,7 @@ export function VerdictChat(props: {
           break
       }
     }
-  }, [input, running, turns, project, model, txHash])
+  }, [input, running, turns, project, model, effort, txHash])
 
   function onKeyDown(event: React.KeyboardEvent) {
     // Enter sends; Shift+Enter inserts a newline
