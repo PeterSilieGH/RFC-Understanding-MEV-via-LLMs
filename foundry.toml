@@ -1,0 +1,21 @@
+# Foundry is used by research agents for read-only on-chain investigation,
+# contract inspection, forked simulations, and source verification. Secrets are
+# resolved from the repository-root .env file and must never be written here.
+
+[profile.default]
+src = "foundry/src"
+test = "foundry/test"
+script = "foundry/script"
+out = "foundry/out"
+cache_path = "foundry/cache"
+broadcast = "foundry/broadcast"
+libs = ["foundry/lib", "node_modules"]
+
+# Research scripts should not be able to execute arbitrary host commands.
+ffi = false
+
+[rpc_endpoints]
+mainnet = "${RPC_URL}"
+
+[etherscan]
+mainnet = { key = "${ETHERSCAN_API_KEY}", chain = 1 }

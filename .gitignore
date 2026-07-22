@@ -4,6 +4,9 @@ node_modules/
 # Build output
 dist/
 build/
+/foundry/out/
+/foundry/cache/
+/foundry/broadcast/
 
 # Environment variables
 .env
