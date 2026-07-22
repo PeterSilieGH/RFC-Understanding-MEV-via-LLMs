@@ -1,0 +1,25 @@
+{
+  "name": "@mev/evidence",
+  "version": "1.0.0",
+  "description": "Snapshot-addressed execution and contract evidence types and Postgres adapters (ADR-016).",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@mev/db": "workspace:*",
+    "pg": "^8.13.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.8"
+  }
+}

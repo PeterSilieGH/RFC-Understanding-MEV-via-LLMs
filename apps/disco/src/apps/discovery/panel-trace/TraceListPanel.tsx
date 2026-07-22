@@ -11,9 +11,9 @@ import clsx from 'clsx'
 import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
-  getTraceGraph,
   type TraceWorkspace,
   type TraceWorkspaceLeg,
+  traceGraphQueryOptions,
   traceWorkspaceQueryOptions,
 } from '../../../api/traces'
 import { ErrorState } from '../../../components/ErrorState'
@@ -50,11 +50,7 @@ function TraceListPanel(props: { txHash: string }) {
 
   const legs = sortLegs(workspace.data?.legs ?? [])
   const traces = useQueries({
-    queries: legs.map((leg) => ({
-      queryKey: ['traces', leg.txHash],
-      queryFn: () => getTraceGraph(leg.txHash),
-      staleTime: Number.POSITIVE_INFINITY,
-    })),
+    queries: legs.map((leg) => traceGraphQueryOptions(leg.txHash)),
   })
 
   if (workspace.isPending) {

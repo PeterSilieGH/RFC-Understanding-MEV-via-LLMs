@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { ClusterLayoutButton } from './ClusterLayoutButton'
 import { ColorButton } from './ColorButton'
+import { FlowToggleButton } from './FlowToggleButton'
 import { HideButton } from './HideButton'
 import { HideNodesButton } from './HideNodesButton'
 import { LayoutLibrary } from './LayoutLibrary'
@@ -24,6 +25,8 @@ export function Controls() {
         <ControlGroup>
           <ShowButton />
           <HideNodesButton />
+          <FlowToggleButton layer="control" />
+          <FlowToggleButton layer="funds" />
         </ControlGroup>
         <ControlGroup>
           <HideButton />

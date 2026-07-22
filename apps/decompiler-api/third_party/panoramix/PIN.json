@@ -1,0 +1,14 @@
+{
+  "name": "panoramix-decompiler",
+  "version": "0.6.1",
+  "repository": "https://github.com/palkeo/panoramix",
+  "revision": "23edd11058abafcba9340afc768d2aa9274c0b62",
+  "revisionDate": "2023-06-14T12:19:41Z",
+  "gitTree": "4114b03f04e681b4173a976320c88e111f4a2f03",
+  "sourceArchiveSha256": "425e2bd5b2752de7962e07aa471bae20dce08a4b92c77dab898e0b5dcbc1aad0",
+  "poetryLockSha256": "de50917ecdea7b6ce1d3c8ccb966e3f43e7a91ead0d8b38243b1f7c07b688cd5",
+  "dependencyLockInImage": "third_party/panoramix/UPSTREAM.poetry.lock",
+  "license": "MIT",
+  "licenseFileSha256": "834c9cb58795628ef95aff8f1959077ae8f5c54d3bad91a1d7de421701e8b55e",
+  "integration": "Installed from the pinned source revision and its upstream poetry.lock; invoked through the local bytecode-only adapter. No upstream files are modified."
+}

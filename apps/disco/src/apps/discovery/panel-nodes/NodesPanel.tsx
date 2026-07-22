@@ -11,6 +11,7 @@ import { LoadingState } from '../../../components/LoadingState'
 import { useProjectQueryOptions } from '../hooks/projectQuery'
 import { usePanelStore } from '../store/panel-store'
 import { Controls } from './controls/Controls'
+import { FlowOverlayProvider } from './flow-overlay/FlowOverlayContext'
 import type { Field, Node } from './store/State'
 import { useStore as useNodeStore, useStore } from './store/store'
 import { NODE_WIDTH } from './store/utils/constants'
@@ -34,12 +35,14 @@ export function NodesPanel() {
   }
 
   return (
-    <div className="h-full w-full overflow-x-hidden">
-      <div className="relative h-full w-full flex-1">
-        <Viewport />
-        <Controls />
+    <FlowOverlayProvider route="project">
+      <div className="h-full w-full overflow-x-hidden">
+        <div className="relative h-full w-full flex-1">
+          <Viewport />
+          <Controls />
+        </div>
       </div>
-    </div>
+    </FlowOverlayProvider>
   )
 }
 

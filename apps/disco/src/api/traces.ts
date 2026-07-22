@@ -13,6 +13,16 @@ export async function getTraceGraph(txHash: string): Promise<TraceGraph> {
   return res.json()
 }
 
+/** One canonical React Query key/options contract for every trace consumer. */
+export function traceGraphQueryOptions(txHash: string | undefined) {
+  return {
+    queryKey: ['traces', txHash] as const,
+    queryFn: () => getTraceGraph(txHash ?? ''),
+    enabled: !!txHash,
+    staleTime: Number.POSITIVE_INFINITY,
+  }
+}
+
 // --- MEV enrichment (explorer-api /api/mev/tx/:hash, M4) --------------------
 
 export interface FormattedAmount {

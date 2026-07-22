@@ -1,6 +1,14 @@
 import { loadConfig } from "@mev/config";
 import pg from "pg";
-import { DETECTOR_SCHEMA_SQL, PIPELINE_SCHEMA_SQL } from "./schema.js";
+import {
+  AGENT_MIGRATIONS,
+  APP_MIGRATIONS,
+  EVIDENCE_MIGRATIONS,
+  MIGRATIONS,
+  PIPELINE_MIGRATIONS,
+  asMigrationPool,
+  runMigrations,
+} from "./migrations.js";
 
 const config = loadConfig();
 
@@ -12,6 +20,11 @@ export const pool = new pg.Pool({
   database: config.POSTGRES_DB,
 });
 
+// A pooled client held for the span of a transaction. Exported so consumers do
+// not derive it via `ReturnType<typeof pool.connect>`, which resolves to pg's
+// callback overload (`void`) instead of the promised `PoolClient`.
+export type DbClient = pg.PoolClient;
+
 // Without this, an idle client error (e.g. the postgres container
 // restarting) is an unhandled 'error' event and crashes the whole process -
 // just log it instead, the pool transparently reconnects on the next query.
@@ -19,51 +32,37 @@ pool.on("error", (err) => {
   console.error("Postgres pool error (connection will be retried):", err.message);
 });
 
-let appTablesReady: Promise<unknown> | undefined;
+let appTablesReady: Promise<void> | undefined;
+
+function retryableOnce(
+  current: Promise<void> | undefined,
+  set: (value: Promise<void> | undefined) => void,
+  operation: () => Promise<void>,
+): Promise<void> {
+  if (current) return current;
+  const pending = operation().catch((error: unknown) => {
+    set(undefined);
+    throw error;
+  });
+  set(pending);
+  return pending;
+}
 
 /**
  * App-owned cache tables. mev-inspect-py's own tables are owned by its
  * Alembic migrations and never created or written here.
  */
-export function ensureAppTables(): Promise<unknown> {
-  if (!appTablesReady) {
-    appTablesReady = pool
-      .query(`
-        CREATE TABLE IF NOT EXISTS block_builders (
-          block_number NUMERIC PRIMARY KEY,
-          builder TEXT,
-          fee_recipient TEXT,
-          block_hash TEXT
-        )
-      `)
-      .then(() => pool.query("ALTER TABLE block_builders ADD COLUMN IF NOT EXISTS block_hash TEXT"))
-      .then(() =>
-        pool.query(`
-          CREATE TABLE IF NOT EXISTS block_bids (
-            block_number NUMERIC PRIMARY KEY,
-            value_wei TEXT,
-            relay TEXT
-          )
-        `),
-      )
-      .then(() =>
-        // mempool visibility per tx ('public'/'private', never 'unknown'):
-        // the watcher only remembers sightings for 2 minutes, so classifications
-        // are persisted here the moment a block is viewed within that window
-        pool.query(`
-          CREATE TABLE IF NOT EXISTS tx_mempool (
-            transaction_hash TEXT PRIMARY KEY,
-            block_number NUMERIC,
-            status TEXT,
-            seconds_in_mempool DOUBLE PRECISION
-          )
-        `),
-      );
-  }
-  return appTablesReady;
+export function ensureAppTables(): Promise<void> {
+  return retryableOnce(
+    appTablesReady,
+    (value) => {
+      appTablesReady = value;
+    },
+    () => runMigrations(asMigrationPool(pool), APP_MIGRATIONS),
+  );
 }
 
-let pipelineTablesReady: Promise<unknown> | undefined;
+let pipelineTablesReady: Promise<void> | undefined;
 
 /**
  * The MEV pipeline schema (blocks / classified_traces / swaps / arbitrages /
@@ -72,22 +71,59 @@ let pipelineTablesReady: Promise<unknown> | undefined;
  * written by the retired mev-inspect-py tool. Replaces the old
  * `alembic upgrade head` step that ran via the compose `tools` profile.
  */
-export function ensurePipelineTables(): Promise<unknown> {
-  if (!pipelineTablesReady) {
-    pipelineTablesReady = pool
-      .query(PIPELINE_SCHEMA_SQL)
-      .then(() => pool.query(DETECTOR_SCHEMA_SQL));
-  }
-  return pipelineTablesReady;
+export function ensurePipelineTables(): Promise<void> {
+  return retryableOnce(
+    pipelineTablesReady,
+    (value) => {
+      pipelineTablesReady = value;
+    },
+    () => runMigrations(asMigrationPool(pool), PIPELINE_MIGRATIONS),
+  );
 }
 
+let evidenceTablesReady: Promise<void> | undefined;
+
+export function ensureEvidenceTables(): Promise<void> {
+  return retryableOnce(
+    evidenceTablesReady,
+    (value) => {
+      evidenceTablesReady = value;
+    },
+    () => runMigrations(asMigrationPool(pool), EVIDENCE_MIGRATIONS),
+  );
+}
+
+let allTablesReady: Promise<void> | undefined;
+
 /**
- * Bring the whole shared schema up to date (app-owned cache tables + the MEV
- * pipeline tables). Call once at service boot. Idempotent and safe to run
- * concurrently across services — every statement is CREATE … IF NOT EXISTS.
+ * Bring the whole shared schema up to date. Call once at service boot.
+ * Checksummed migrations are serialized across services by a Postgres
+ * advisory lock and each ledger write commits with its schema change.
  */
-export function migrate(): Promise<unknown> {
-  return Promise.all([ensureAppTables(), ensurePipelineTables()]);
+export function migrate(): Promise<void> {
+  return retryableOnce(
+    allTablesReady,
+    (value) => {
+      allTablesReady = value;
+    },
+    () => runMigrations(asMigrationPool(pool), MIGRATIONS),
+  );
 }
 
 export { PIPELINE_SCHEMA_SQL, DETECTOR_SCHEMA_SQL } from "./schema.js";
+export { AGENT_SCHEMA_SQL } from "./agentSchema.js";
+export { EVIDENCE_SCHEMA_SQL } from "./evidenceSchema.js";
+export {
+  AGENT_MIGRATIONS,
+  APP_MIGRATIONS,
+  APP_SCHEMA_SQL,
+  checksumMigration,
+  EVIDENCE_MIGRATIONS,
+  MIGRATION_ADVISORY_LOCK_ID,
+  MIGRATIONS,
+  PIPELINE_MIGRATIONS,
+  runMigrations,
+  type Migration,
+  type MigrationClient,
+  type MigrationPool,
+} from "./migrations.js";

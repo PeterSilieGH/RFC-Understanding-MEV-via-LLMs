@@ -81,7 +81,10 @@ export class TraceClassifier {
         abiName: spec.abiName,
         functionName: callData.functionName,
         functionSignature: callData.functionSignature,
-        inputs: callData.inputs,
+      inputs: callData.inputs,
+      input,
+      output: typeof trace.result?.output === "string" ? trace.result.output : null,
+      callType: typeof action.callType === "string" ? action.callType : "call",
       };
     }
 
@@ -99,24 +102,50 @@ export class TraceClassifier {
       functionName: null,
       functionSignature: null,
       inputs: null,
+      input,
+      output: typeof trace.result?.output === "string" ? trace.result.output : null,
+      callType: typeof action.callType === "string" ? action.callType : "call",
     };
   }
 
   private baseTrace(trace: RawTrace): ClassifiedTrace {
-    // Non-call traces (create / suicide): no decoded call fields.
+    const action = trace.action;
+    const result = trace.result;
+    const isCreate = trace.type === "create";
+    const isSuicide = trace.type === "suicide";
+    const from =
+      typeof action.from === "string"
+        ? action.from.toLowerCase()
+        : typeof action.address === "string"
+          ? action.address.toLowerCase()
+          : null;
+    const to =
+      isCreate && typeof result?.address === "string"
+        ? result.address.toLowerCase()
+        : isSuicide && typeof action.refundAddress === "string"
+          ? action.refundAddress.toLowerCase()
+          : null;
     return {
       ...this.commonFields(trace),
       classification: "unknown",
-      toAddress: null,
-      fromAddress: null,
-      value: null,
-      gas: null,
-      gasUsed: null,
+      toAddress: to,
+      fromAddress: from,
+      value: hexToBigInt(isSuicide ? action.balance : action.value),
+      gas: hexToBigInt(action.gas),
+      gasUsed: result ? hexToBigInt(result.gasUsed) : null,
       protocol: null,
       abiName: null,
       functionName: null,
       functionSignature: null,
       inputs: null,
+      input: typeof action.init === "string" ? action.init : null,
+      output:
+        typeof result?.code === "string"
+          ? result.code
+          : typeof result?.output === "string"
+            ? result.output
+            : null,
+      callType: null,
     };
   }
 

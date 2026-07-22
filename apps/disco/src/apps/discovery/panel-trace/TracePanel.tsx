@@ -9,24 +9,26 @@
 // per-call details live in the docked `trace` panel instead of a floating
 // sidebar - the graph publishes its active tx in the workspace store.
 import {
+  buildTraceFlowEdges,
   isTxHash,
   layoutTraceGraph,
   type TraceCallNode,
   type TraceGraph,
 } from '@mev/trace-graph'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
-  getTraceGraph,
   getTxMev,
   type TraceWorkspace,
   type TxMev,
   type TxSwap,
+  traceGraphQueryOptions,
   traceWorkspaceQueryOptions,
 } from '../../../api/traces'
 import { LoadingState } from '../../../components/LoadingState'
 import { Controls } from '../panel-nodes/controls/Controls'
+import { FlowOverlayProvider } from '../panel-nodes/flow-overlay/FlowOverlayContext'
 import type { Field, Node } from '../panel-nodes/store/State'
 import { NodesStoreProvider, traceNodesStore } from '../panel-nodes/store/store'
 import { NODE_WIDTH } from '../panel-nodes/store/utils/constants'
@@ -54,12 +56,7 @@ export function TracePanel(props: { initialTxHash?: string }) {
       : '',
   )
 
-  const response = useQuery({
-    queryKey: ['traces', txHash],
-    queryFn: () => getTraceGraph(txHash),
-    enabled: txHash !== '',
-    staleTime: Number.POSITIVE_INFINITY,
-  })
+  const response = useQuery(traceGraphQueryOptions(txHash || undefined))
 
   const mevResponse = useQuery({
     queryKey: ['mev-tx', txHash],
@@ -76,6 +73,10 @@ export function TracePanel(props: { initialTxHash?: string }) {
   // bounded discovery run, so manual traces must not fire it.
   const { txHash: routeTxHash } = useParams()
   const workspace = useQuery(traceWorkspaceQueryOptions(routeTxHash))
+  const flowEdges = useMemo(
+    () => traceFlowEdges(response.data, workspace.data),
+    [response.data, workspace.data],
+  )
 
   const swapsByNodeId = swapsForTx(mevResponse.data, txHash)
   useLoadTraceNodes(response.data, swapsByNodeId, workspace.data)
@@ -101,48 +102,85 @@ export function TracePanel(props: { initialTxHash?: string }) {
 
   return (
     <NodesStoreProvider value={traceNodesStore}>
-      <div className="flex h-full w-full flex-col">
-        {/* deep links determine the tx; the form is only the manual entry point */}
-        {!routeTxHash && (
-          <form
-            onSubmit={onSubmit}
-            className="flex items-center gap-2 border-coffee-600 border-b p-2"
-          >
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Transaction hash (0x…)"
-              spellCheck={false}
-              className="h-7 min-w-0 flex-1 rounded bg-coffee-800 px-2 font-mono text-coffee-100 text-xs outline-none placeholder:text-coffee-400"
-            />
-            <button
-              type="submit"
-              className="h-7 rounded bg-coffee-600 px-3 font-bold text-coffee-100 text-xs uppercase hover:bg-coffee-500"
+      <FlowOverlayProvider
+        route="trace"
+        edges={flowEdges}
+        loading={response.isLoading && txHash !== ''}
+        error={response.isError ? (response.error as Error).message : undefined}
+      >
+        <div className="flex h-full w-full flex-col">
+          {/* deep links determine the tx; the form is only the manual entry point */}
+          {!routeTxHash && (
+            <form
+              onSubmit={onSubmit}
+              className="flex items-center gap-2 border-coffee-600 border-b p-2"
             >
-              Trace
-            </button>
-          </form>
-        )}
-        {inputError && <p className="p-2 text-aux-red text-xs">{inputError}</p>}
-        {response.isError && (
-          <p className="p-2 text-aux-red text-xs">
-            {(response.error as Error).message}
-          </p>
-        )}
-        <div className="relative min-h-0 w-full flex-1">
-          {response.isLoading && txHash !== '' ? (
-            <LoadingState />
-          ) : (
-            <>
-              <Viewport />
-              <Controls />
-              <TraceLegend />
-            </>
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Transaction hash (0x…)"
+                spellCheck={false}
+                className="h-7 min-w-0 flex-1 rounded bg-coffee-800 px-2 font-mono text-coffee-100 text-xs outline-none placeholder:text-coffee-400"
+              />
+              <button
+                type="submit"
+                className="h-7 rounded bg-coffee-600 px-3 font-bold text-coffee-100 text-xs uppercase hover:bg-coffee-500"
+              >
+                Trace
+              </button>
+            </form>
           )}
+          {inputError && <p className="p-2 text-aux-red text-xs">{inputError}</p>}
+          {response.isError && (
+            <p className="p-2 text-aux-red text-xs">
+              {(response.error as Error).message}
+            </p>
+          )}
+          <div className="relative min-h-0 w-full flex-1">
+            {response.isLoading && txHash !== '' ? (
+              <LoadingState />
+            ) : (
+              <>
+                <Viewport />
+                <Controls />
+                <TraceLegend />
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      </FlowOverlayProvider>
     </NodesStoreProvider>
   )
+}
+
+function traceFlowEdges(
+  graph: TraceGraph | undefined,
+  workspace: TraceWorkspace | undefined,
+) {
+  if (!graph) return []
+  const edges =
+    graph.flowEdges ??
+    buildTraceFlowEdges({
+      transactionHash: graph.transactionHash,
+      chain: graph.chain,
+      nodes: graph.nodes,
+      edges: graph.edges,
+      tokenTransfers: graph.tokenTransfers,
+    })
+  return edges.map((edge) => {
+    if (edge.layer !== 'control') return edge
+    const call = edge.facts.find((fact) => fact.type === 'call')
+    if (!call || call.type !== 'call') return edge
+    const selector = call.selector
+      ? (workspace?.selectors?.[call.selector] ?? call.selector)
+      : '(fallback)'
+    const gas = call.gasUsed ? ` · ${call.gasUsed} gas` : ''
+    const failed = call.failed ? ' · failed' : ''
+    return {
+      ...edge,
+      label: `${call.callType} ${selector} ×${edge.count}${gas}${failed}`,
+    }
+  })
 }
 
 /**
