@@ -2,12 +2,16 @@
 // A reusable agent-model picker. It lists the models available to agent-api
 // (those with a working credential in the pi agent dir) and is driven by an
 // external value/onChange, so Global app settings can mount two of them — one
-// for Analyze, one for Incident reporting. Seeds its value from the agent-api
+// for Analyze, one for Discover. Seeds its value from the agent-api
 // settings default (project .pi/settings.json over global) the first time
 // models load; react-query caches the fetch, so mounting several shares it.
 import { useQuery } from '@tanstack/react-query'
 import { useEffect } from 'react'
-import { type AgentModelRef, getAgentModels } from '../../../api/agent'
+import {
+  type AgentEffort,
+  type AgentModelRef,
+  getAgentModels,
+} from '../../../api/agent'
 import { Select } from '../../../components/Select'
 import { modelKey } from '../panel-agent/model-store'
 
@@ -69,6 +73,45 @@ export function AgentModelSelect({
           {models.map((m) => (
             <Select.Item key={modelKey(m)} value={modelKey(m)}>
               {m.label}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select.Root>
+    </div>
+  )
+}
+
+const EFFORTS: { value: AgentEffort | 'default'; label: string }[] = [
+  { value: 'default', label: 'Default effort' },
+  { value: 'off', label: 'Off' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra high' },
+]
+
+export function AgentEffortSelect(props: {
+  label: string
+  value: AgentEffort | undefined
+  onChange: (effort: AgentEffort | undefined) => void
+}) {
+  return (
+    <div className="flex items-center gap-2 font-light text-sm">
+      <span className="w-40">{props.label} effort</span>
+      <Select.Root
+        value={props.value ?? 'default'}
+        onValueChange={(value) =>
+          props.onChange(
+            value === 'default' ? undefined : (value as AgentEffort),
+          )
+        }
+      >
+        <Select.Trigger />
+        <Select.Content>
+          {EFFORTS.map((effort) => (
+            <Select.Item key={effort.value} value={effort.value}>
+              {effort.label}
             </Select.Item>
           ))}
         </Select.Content>

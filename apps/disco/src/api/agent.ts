@@ -18,11 +18,24 @@ export type AgentStreamEvent =
   | { type: 'queued' }
   | { type: 'flagged'; addresses: string[] }
   | { type: 'done'; report: string; transcript: string }
+  | {
+      type: 'usage'
+      tokens: number | null
+      contextWindow: number
+      percent: number | null
+    }
   | { type: 'saved'; id: number }
   | { type: 'error'; message: string }
   | { type: 'warning'; address: string; message: string }
   | { type: 'bundle'; bundle: ContractBundle }
   | { type: 'prepared' }
+  | {
+      type: 'progress'
+      phase: 'resolved' | 'cached' | 'analyzing' | 'completed'
+      completed: number
+      total: number
+      address?: string
+    }
   | { type: 'session'; session: DiscoverySession }
   | { type: 'enrichment'; id: number; config: string; template: string | null }
 
@@ -43,6 +56,14 @@ export interface AgentModelRef {
   provider: string
   id: string
 }
+
+export type AgentEffort =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
 
 export interface AgentModel extends AgentModelRef {
   label: string
@@ -65,11 +86,10 @@ export interface ContractBundle {
   updatedAt: string
 }
 
-export interface BundleContractInput {
+export interface BundleContractRef {
   address: string
   name?: string
-  codeContext: string
-  valueContext?: string
+  codehash?: string
 }
 
 export interface DiscoveryTurn {
@@ -82,6 +102,8 @@ export interface DiscoverySession {
   incident: string
   kind: ResearchKind
   bundleFingerprint: string
+  contextTokens: number | null
+  contextWindow: number | null
   turns: DiscoveryTurn[]
   updatedAt: string
 }
@@ -126,6 +148,7 @@ export interface AnalyzeRequest {
   valueContext?: string
   /** model override from the top-bar picker; omit for the settings default */
   model?: AgentModelRef
+  effort?: AgentEffort
 }
 
 /** POST /api/agent/analyze and yield each NDJSON event as it streams. */
@@ -140,10 +163,11 @@ export function streamPrepareBundles(
   req: {
     project: string
     kinds: ResearchKind[]
-    contracts: BundleContractInput[]
+    contracts: BundleContractRef[]
     /** incident gas fee + builder tip context (ADR-013 §7), when on a trace route */
     gas?: string
     model?: AgentModelRef
+    effort?: AgentEffort
   },
   signal?: AbortSignal,
 ): AsyncGenerator<AgentStreamEvent> {
@@ -162,6 +186,7 @@ export function streamDiscovery(
     /** incident gas fee + builder tip context (ADR-013 §7) */
     gas?: string
     model?: AgentModelRef
+    effort?: AgentEffort
     reset?: boolean
   },
   signal?: AbortSignal,
@@ -178,6 +203,7 @@ export function streamValueEnrichment(
     codeContext: string
     valueContext?: string
     model?: AgentModelRef
+    effort?: AgentEffort
   },
   signal?: AbortSignal,
 ): AsyncGenerator<AgentStreamEvent> {
@@ -198,6 +224,7 @@ export async function getDiscoverySession(
 export interface VerdictRequest {
   project: string
   model?: AgentModelRef
+  effort?: AgentEffort
   /** compact call-tree (signatures + links) for the incident, when on a trace route */
   traceTree?: string
   /** decoded swaps per leg (protocol, pool, token amounts in/out) */
@@ -223,6 +250,7 @@ export interface VerdictChatTurn {
 export interface VerdictChatRequest {
   project: string
   model?: AgentModelRef
+  effort?: AgentEffort
   /** the user's follow-up question */
   question: string
   /** the conversation so far (prior questions + answers), for grounding */

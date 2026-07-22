@@ -65,7 +65,7 @@ It needs an external RPC node with `trace_block` support (reth/Erigon — plain 
 ## Version control
 
 - **A work package is developed in its own git worktree on a feature branch based off `main`** — never commit a large effort straight onto a long-lived branch or in the primary checkout. Record the decision as an ADR in `docs/adr/` plus a work-package doc in `docs/design/` *before* implementing. Create an isolated worktree for the branch (e.g. `git worktree add ../wt-<slug> -b <feature-branch> main`) and do the work there. **After verification** (runtime observation, per the section above), the commit is pushed and a merge request is opened against `main`; the worktree is removed once the MR lands.
-- Commit and push **only when asked** (finishing/landing a work package counts as being asked to push it and open its MR). End commit messages with the `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` trailer.
+- Commit and push **only when asked** (finishing/landing a work package counts as being asked to push it and open its MR).
 - **Never commit submodule state** (`l2beat`) or the pi agent dir, and never commit UI-created `trace-*` discovery projects or other untracked submodule files (they may hold local `.env`s).
 
 ## Architecture Essentials

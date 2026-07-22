@@ -43,6 +43,8 @@ export interface DiscoverySession {
   bundleFingerprint: string;
   modelProvider: string | null;
   modelId: string | null;
+  contextTokens: number | null;
+  contextWindow: number | null;
   turns: SessionTurn[];
   updatedAt: string;
 }
@@ -87,10 +89,14 @@ function ensureTables(): Promise<unknown> {
         bundle_fingerprint TEXT NOT NULL,
         model_provider TEXT,
         model_id TEXT,
+        context_tokens INTEGER,
+        context_window INTEGER,
         turns JSONB NOT NULL DEFAULT '[]'::jsonb,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (project, incident, kind)
-      )
+      );
+      ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS context_tokens INTEGER;
+      ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS context_window INTEGER;
     `);
   }
   return ready;
@@ -247,18 +253,19 @@ export async function saveBundle(
   return toBundle(res.rows[0]);
 }
 
-export async function addBundleAddress(
+export async function addBundleAddresses(
   codehash: string,
   kind: ResearchKind,
-  address: string,
+  addresses: string[],
 ): Promise<ContractBundle | null> {
   await ensureTables();
+  if (addresses.length === 0) return null;
   const res = await pool.query<BundleRow>(
     `UPDATE contract_bundles SET
-       addresses = ARRAY(SELECT DISTINCT unnest(addresses || ARRAY[$3]::text[]))
+       addresses = ARRAY(SELECT DISTINCT unnest(addresses || $3::text[]))
      WHERE codehash=$1 AND kind=$2
      RETURNING *`,
-    [codehash, kind, address],
+    [codehash, kind, addresses],
   );
   return res.rows[0] ? toBundle(res.rows[0]) : null;
 }
@@ -270,6 +277,8 @@ interface SessionRow {
   bundle_fingerprint: string;
   model_provider: string | null;
   model_id: string | null;
+  context_tokens: number | null;
+  context_window: number | null;
   turns: SessionTurn[];
   updated_at: string;
 }
@@ -282,6 +291,8 @@ function toSession(row: SessionRow): DiscoverySession {
     bundleFingerprint: row.bundle_fingerprint,
     modelProvider: row.model_provider,
     modelId: row.model_id,
+    contextTokens: row.context_tokens,
+    contextWindow: row.context_window,
     turns: row.turns,
     updatedAt: row.updated_at,
   };
@@ -306,12 +317,15 @@ export async function saveSession(
   await ensureTables();
   const res = await pool.query<SessionRow>(
     `INSERT INTO agent_sessions
-       (project, incident, kind, bundle_fingerprint, model_provider, model_id, turns)
-     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+       (project, incident, kind, bundle_fingerprint, model_provider, model_id,
+        context_tokens, context_window, turns)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
      ON CONFLICT (project, incident, kind) DO UPDATE SET
        bundle_fingerprint=EXCLUDED.bundle_fingerprint,
        model_provider=EXCLUDED.model_provider,
        model_id=EXCLUDED.model_id,
+       context_tokens=EXCLUDED.context_tokens,
+       context_window=EXCLUDED.context_window,
        turns=EXCLUDED.turns,
        updated_at=now()
      RETURNING *`,
@@ -322,6 +336,8 @@ export async function saveSession(
       session.bundleFingerprint,
       session.modelProvider,
       session.modelId,
+      session.contextTokens,
+      session.contextWindow,
       JSON.stringify(session.turns),
     ],
   );

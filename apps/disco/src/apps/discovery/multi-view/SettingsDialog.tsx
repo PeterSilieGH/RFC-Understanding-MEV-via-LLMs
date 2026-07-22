@@ -4,7 +4,7 @@ import { Dialog } from '../../../components/Dialog'
 import { IconGear } from '../../../icons/IconGear'
 import { useAgentModelStore } from '../panel-agent/model-store'
 import { useGlobalSettingsStore } from '../store/global-settings-store'
-import { AgentModelSelect } from './ModelSelect'
+import { AgentEffortSelect, AgentModelSelect } from './ModelSelect'
 
 const MAX_DEPTH_LIMIT = 100
 
@@ -16,15 +16,19 @@ export function SettingsDialog() {
   const setUserSettings = useGlobalSettingsStore((s) => s.setUserSettings)
 
   // DIVERGENCE(mev): agent model selection lives here now (moved from the top
-  // bar), split into one model for Analyze and one for Incident reporting.
+  // bar), split into independent Analyze and Discover phases.
   const analyzeModel = useAgentModelStore((s) => s.analyzeModel)
-  const incidentModel = useAgentModelStore((s) => s.incidentModel)
+  const discoverModel = useAgentModelStore((s) => s.discoverModel)
+  const analyzeEffort = useAgentModelStore((s) => s.analyzeEffort)
+  const discoverEffort = useAgentModelStore((s) => s.discoverEffort)
   const setAnalyzeModel = useAgentModelStore((s) => s.setAnalyzeModel)
-  const setIncidentModel = useAgentModelStore((s) => s.setIncidentModel)
+  const setDiscoverModel = useAgentModelStore((s) => s.setDiscoverModel)
+  const setAnalyzeEffort = useAgentModelStore((s) => s.setAnalyzeEffort)
+  const setDiscoverEffort = useAgentModelStore((s) => s.setDiscoverEffort)
 
   return (
     <Dialog.Root>
-      <Dialog.Trigger>
+      <Dialog.Trigger aria-label="Global app settings">
         <IconGear />
       </Dialog.Trigger>
       <Dialog.Body>
@@ -69,15 +73,25 @@ export function SettingsDialog() {
           <div className="flex flex-col gap-2">
             <AgentModelSelect
               label="Analyze"
-              title="Model used by the Analyze panel (code / value review)"
+              title="Model used for contract bundles, code/value review, and value enrichment"
               value={analyzeModel}
               onChange={setAnalyzeModel}
             />
+            <AgentEffortSelect
+              label="Analyze"
+              value={analyzeEffort}
+              onChange={setAnalyzeEffort}
+            />
             <AgentModelSelect
-              label="Incident reporting"
-              title="Model used to build the incident verdict and its follow-up chat"
-              value={incidentModel}
-              onChange={setIncidentModel}
+              label="Discover"
+              title="Model used to build Discovery verdicts and follow-up chat"
+              value={discoverModel}
+              onChange={setDiscoverModel}
+            />
+            <AgentEffortSelect
+              label="Discover"
+              value={discoverEffort}
+              onChange={setDiscoverEffort}
             />
             <div className="font-light text-coffee-400 text-xs">
               Models come from agent-api (those with a working credential in the

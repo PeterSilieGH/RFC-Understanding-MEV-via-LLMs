@@ -16,6 +16,7 @@ export function ValueConfigEnrichment(props: {
 }) {
   const models = useConfigModels()
   const model = useAgentModelStore((state) => state.analyzeModel)
+  const effort = useAgentModelStore((state) => state.analyzeEffort)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | undefined>(undefined)
@@ -44,6 +45,7 @@ export function ValueConfigEnrichment(props: {
           codeContext,
           valueContext,
           model,
+          effort,
         },
         controller.signal,
       )
