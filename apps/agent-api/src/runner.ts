@@ -1,14 +1,19 @@
-// Embeds the pi SDK: one in-memory session per analysis run, no filesystem or
-// bash tools (ADR-006/009). The only tool offered is get_function_code, and
-// only when parsed source was submitted — the model pulls individual function
-// bodies from that source instead of us shipping whole contracts.
+// Embeds the pi SDK: one in-memory session per analysis run. Tools are opt-in:
+// get_function_code (when parsed source was submitted — the model pulls
+// individual function bodies from that source instead of us shipping whole
+// contracts) and, for Discovery runs, a bounded READ-ONLY foundry `cast` tool
+// (ADR-013 §8 — the one filesystem/subprocess exception to the ADR-006/009 "no
+// bash tools" rule; strictly allowlisted read subcommands via execFile, never a
+// shell). No arbitrary filesystem or bash access otherwise.
 //
 // Base config (auth + model selection) is sourced from pi's agent dir
 // (~/.pi/agent by default, or $PI_CODING_AGENT_DIR): no model or API key is
 // baked into this service. The project `.pi/` supplements it — `.pi/SYSTEM.md`
 // overrides the system prompt, `.pi/AGENTS.md` and `.pi/skills/` load as usual.
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   AuthStorage,
   DefaultResourceLoader,
@@ -24,8 +29,16 @@ import { Type } from "typebox";
 import { RunScheduler } from "./scheduler.js";
 import { type FunctionEntry, lookupFunction } from "./signatures.js";
 
+const execFileAsync = promisify(execFile);
+
+// Mirrors @earendil-works/pi-agent-core's ThinkingLevel (not re-exported by the
+// coding-agent package we depend on). setThinkingLevel clamps to the model's
+// real capability, so requesting a level a model can't do degrades to "off".
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export type RunEvent =
   | { type: "delta"; text: string }
+  | { type: "reasoning"; text: string }
   | { type: "tool"; name: string; detail: string }
   | { type: "queued" }
   | { type: "flagged"; addresses: string[] }
@@ -54,6 +67,11 @@ export interface RunRequest {
   /** Kind-specific Discovery framing appended to the shared project system
    * prompt. Persistent cache keys must distinguish different suffixes. */
   systemPromptSuffix?: string;
+  /** Requested reasoning level (ADR-013 §6). Clamped to model capability by the
+   * harness; reasoning surfaces as `reasoning` events. Omit to use the default. */
+  thinkingLevel?: ThinkingLevel;
+  /** Offer the bounded read-only foundry `cast` tool (ADR-013 §8). */
+  enableCast?: boolean;
 }
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
@@ -174,6 +192,15 @@ async function execute(
       }),
     );
   }
+  if (req.enableCast) {
+    toolNames.push("cast");
+    customTools.push(
+      buildCastTool((detail) => {
+        toolLog.push(detail);
+        emit({ type: "tool", name: "cast", detail });
+      }),
+    );
+  }
 
   // Supplement the base config with the project's .pi resources: SYSTEM.md
   // overrides the prompt, AGENTS.md and skills/ load through discovery. Share
@@ -222,6 +249,17 @@ async function execute(
     return;
   }
 
+  // ADR-013 §6: request reasoning where the model supports it (clamped by the
+  // harness). Only meaningful on session creation; cached persistent sessions
+  // keep the level set on their first turn.
+  if (req.thinkingLevel) {
+    try {
+      session.setThinkingLevel(req.thinkingLevel);
+    } catch {
+      // model without adjustable thinking — leave the default
+    }
+  }
+
   if (req.persistentKey) {
     persistentSessions.set(req.persistentKey, session);
     while (persistentSessions.size > MAX_PERSISTENT_SESSIONS) {
@@ -254,9 +292,15 @@ async function runSessionTurn(
 ): Promise<void> {
   let report = "";
   const unsubscribe = session.subscribe((event) => {
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      report += event.assistantMessageEvent.delta;
-      emit({ type: "delta", text: event.assistantMessageEvent.delta });
+    if (event.type !== "message_update") return;
+    const inner = event.assistantMessageEvent;
+    if (inner.type === "text_delta") {
+      report += inner.delta;
+      emit({ type: "delta", text: inner.delta });
+    } else if (inner.type === "thinking_delta") {
+      // ADR-013 §6: reasoning is display-only — streamed but not folded into the
+      // report/transcript or the durable session turns.
+      emit({ type: "reasoning", text: inner.delta });
     }
   });
 
@@ -350,6 +394,102 @@ function buildFlagImportantTool(onFlag: (addresses: string[]) => void) {
       };
     },
   });
+}
+
+// ADR-013 §8: bounded READ-ONLY foundry cast. Only these subcommands run; any
+// state-changing / wallet / broadcast form (send, mktx, publish, rpc, wallet,
+// import…) is rejected before spawning. execFile (never a shell) with an args
+// array means there is no shell-injection surface.
+const CAST_ALLOWED = new Set([
+  "call",
+  "storage",
+  "balance",
+  "code",
+  "codesize",
+  "4byte",
+  "4byte-decode",
+  "sig",
+  "sig-event",
+  "tx",
+  "receipt",
+  "block",
+  "block-number",
+  "chain-id",
+  "nonce",
+  "age",
+  "basefee",
+  "gas-price",
+  "to-dec",
+  "to-hex",
+  "keccak",
+  "abi-decode",
+  "decode-abi",
+]);
+// Resolved via PATH (spawn uses execvp): host has it at /usr/bin/cast, the
+// agent-api image installs foundry to /usr/local/bin/cast. ENOENT (not on PATH)
+// degrades to "cast unavailable".
+const CAST_BIN = "cast";
+const CAST_TIMEOUT_MS = 20_000;
+const CAST_MAX_OUTPUT = 8192;
+
+function buildCastTool(onCall: (detail: string) => void) {
+  const config = loadConfig();
+  return defineTool({
+    name: "cast",
+    label: "cast (read-only)",
+    description:
+      "Run a READ-ONLY foundry `cast` command against the configured mainnet RPC to " +
+      "retrieve on-chain facts you cannot get from the supplied bundles — storage slots, " +
+      "balances, eth_call results, code, token metadata, tx/receipt/block data. Pass the " +
+      'cast arguments as a list, e.g. ["call","0xUniPair","getReserves()(uint112,uint112,uint32)"] ' +
+      'or ["storage","0xToken","0x2"]. The --rpc-url is supplied automatically; do not add it. ' +
+      "Only read subcommands are permitted; state-changing/wallet/broadcast commands are rejected. " +
+      "Cite any fact you take from a cast result.",
+    parameters: Type.Object({
+      args: Type.Array(Type.String(), {
+        description:
+          "cast arguments, subcommand first (e.g. call/storage/balance/code/4byte/tx/block).",
+      }),
+    }),
+    execute: async (_id, params) => {
+      const args = params.args.filter((a) => typeof a === "string");
+      const sub = args[0];
+      if (!sub || !CAST_ALLOWED.has(sub)) {
+        onCall(`rejected cast ${sub ?? "(none)"}`);
+        return castResult(
+          `Refused: "${sub ?? ""}" is not an allowed read-only cast subcommand. ` +
+            `Allowed: ${[...CAST_ALLOWED].join(", ")}.`,
+        );
+      }
+      const env: NodeJS.ProcessEnv = { ...process.env, ETH_RPC_URL: config.RPC_URL };
+      if (config.ETHERSCAN_API_KEY) env.ETHERSCAN_API_KEY = config.ETHERSCAN_API_KEY;
+      try {
+        const { stdout } = await execFileAsync(CAST_BIN, args, {
+          env,
+          timeout: CAST_TIMEOUT_MS,
+          maxBuffer: 1024 * 1024,
+        });
+        onCall(`cast ${sub}`);
+        return castResult(truncate(stdout.trim() || "(empty result)", CAST_MAX_OUTPUT));
+      } catch (err) {
+        const e = err as { code?: string; stderr?: string; message?: string };
+        if (e.code === "ENOENT") {
+          onCall("cast unavailable");
+          return castResult(
+            "cast is not available in this environment; rely on supplied material.",
+          );
+        }
+        onCall(`cast ${sub} failed`);
+        return castResult(
+          `cast ${sub} failed: ${truncate((e.stderr || e.message || "unknown error").trim(), 1000)}`,
+        );
+      }
+    },
+  });
+}
+
+function castResult(text: string) {
+  return { content: [{ type: "text" as const, text }], details: {} };
 }
 
 const MAX_TRANSCRIPT_REPORT = 4000;

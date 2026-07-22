@@ -13,6 +13,7 @@ export interface AgentSkill {
 
 export type AgentStreamEvent =
   | { type: 'delta'; text: string }
+  | { type: 'reasoning'; text: string }
   | { type: 'tool'; name: string; detail: string }
   | { type: 'queued' }
   | { type: 'flagged'; addresses: string[] }
@@ -140,6 +141,8 @@ export function streamPrepareBundles(
     project: string
     kinds: ResearchKind[]
     contracts: BundleContractInput[]
+    /** incident gas fee + builder tip context (ADR-013 §7), when on a trace route */
+    gas?: string
     model?: AgentModelRef
   },
   signal?: AbortSignal,
@@ -156,6 +159,8 @@ export function streamDiscovery(
     question?: string
     traceTree?: string
     swaps?: string
+    /** incident gas fee + builder tip context (ADR-013 §7) */
+    gas?: string
     model?: AgentModelRef
     reset?: boolean
   },

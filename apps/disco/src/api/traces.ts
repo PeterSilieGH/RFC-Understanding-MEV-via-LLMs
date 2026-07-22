@@ -56,6 +56,11 @@ export interface TxMev {
     hash: string
     from: string | null
     to: string | null
+    /** decimal-wei strings from miner_payments (explorer-api mev.ts). */
+    coinbaseTransferWei?: string | null
+    gasPriceWei?: string | null
+    gasUsed?: string | null
+    baseFeePerGasWei?: string | null
     swaps: TxSwap[]
     mev: TxMevEntry[]
   } | null

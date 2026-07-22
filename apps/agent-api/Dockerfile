@@ -12,6 +12,16 @@ RUN pnpm install --frozen-lockfile --filter @mev/agent-api... \
     && pnpm --filter @mev/agent-api... build
 
 FROM node:22-slim
+# Foundry `cast` for the Discovery agent's read-only on-chain lookups (ADR-013
+# §8). Installed to /usr/local/bin (on PATH for any uid); the runner resolves
+# `cast` via PATH and degrades gracefully if it is ever absent.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates git \
+    && curl -L https://foundry.paradigm.xyz | bash \
+    && /root/.foundry/bin/foundryup \
+    && cp /root/.foundry/bin/cast /usr/local/bin/cast \
+    && rm -rf /root/.foundry /var/lib/apt/lists/* \
+    && cast --version
 WORKDIR /repo
 COPY --from=build /repo ./
 # Project pi resources: .pi/SYSTEM.md (system prompt override), .pi/AGENTS.md,

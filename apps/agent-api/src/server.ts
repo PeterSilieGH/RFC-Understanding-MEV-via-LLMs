@@ -93,22 +93,24 @@ async function generateContractBundles(input: {
   identity: { contract: BundleContractInput; codehash: string };
   missing: ResearchKind[];
   targetBundleTokens: number;
+  gas?: string;
   model: ModelRef;
   emit: (event: RunEvent) => void;
   signal: AbortSignal;
 }): Promise<void> {
-  const { project, identity, missing, targetBundleTokens, model, emit, signal } = input;
+  const { project, identity, missing, targetBundleTokens, gas, model, emit, signal } = input;
   let report = "";
   let analysisError: string | undefined;
   await runAnalysis(
     {
-      prompt: buildBundlePrompt(identity.contract, missing, targetBundleTokens),
+      prompt: buildBundlePrompt(identity.contract, missing, targetBundleTokens, gas),
       entries: parseFunctionSignatures(identity.contract.codeContext),
       transcriptHeader: [
         "Skill: autonomous-bundle",
         `Target: ${identity.contract.address}`,
         `Kinds: ${missing.join(", ")}`,
       ],
+      enableCast: true,
       model,
     },
     (event) => {
@@ -155,6 +157,7 @@ async function ensureContractBundles(input: {
   identity: { contract: BundleContractInput; codehash: string };
   kinds: ResearchKind[];
   targetBundleTokens: number;
+  gas?: string;
   model: ModelRef;
   emit: (event: RunEvent) => void;
   signal: AbortSignal;
@@ -192,11 +195,13 @@ app.post("/api/agent/bundles/prepare", async (req, res) => {
     project?: string;
     kinds?: unknown;
     contracts?: unknown;
+    gas?: string;
     model?: unknown;
   };
   const project = body.project?.trim();
   const kinds = pickKinds(body.kinds);
   const contracts = pickContracts(body.contracts);
+  const gas = typeof body.gas === "string" ? body.gas.trim() || undefined : undefined;
   if (!project || kinds.length === 0 || contracts.length === 0) {
     res
       .status(400)
@@ -235,6 +240,7 @@ app.post("/api/agent/bundles/prepare", async (req, res) => {
             identity,
             kinds,
             targetBundleTokens,
+            gas,
             model,
             emit: (event) => writeNdjson(res, event),
             signal,
@@ -375,9 +381,13 @@ app.post("/api/agent/values/enrich", async (req, res) => {
   }
 });
 
+// ADR-013 §8: each prompt invites the read-only foundry `cast` tool for facts
+// the bundles/evidence lack, with the standard citation requirement.
+const CAST_HINT =
+  "You may call the read-only `cast` tool to retrieve on-chain facts the supplied bundles/evidence do not contain (storage slots, balances, eth_call results, code, token metadata); cite anything you use.";
 const DISCOVERY_PROMPTS: Record<ResearchKind, string> = {
-  mev: "You are conducting grounded MEV research. Explain ordering, value flow, extraction mechanism, affected parties, uncertainty, and supporting contract evidence. Do not provide an executable extraction bot.",
-  vuln: "You are conducting grounded smart-contract vulnerability research. Explain trust boundaries, reachable failure modes, impact, prerequisites, uncertainty, and supporting contract evidence. Do not claim an exploit without evidence.",
+  mev: `You are conducting grounded MEV research. Explain ordering, value flow, extraction mechanism, affected parties, uncertainty, and supporting contract evidence. Do not provide an executable extraction bot. ${CAST_HINT}`,
+  vuln: `You are conducting grounded smart-contract vulnerability research. Explain trust boundaries, reachable failure modes, impact, prerequisites, uncertainty, and supporting contract evidence. Do not claim an exploit without evidence. ${CAST_HINT}`,
 };
 
 function discoveryBase(
@@ -385,6 +395,7 @@ function discoveryBase(
   bundles: ContractBundle[],
   traceTree: string,
   swaps: string,
+  gas: string,
 ): string {
   return [
     DISCOVERY_PROMPTS[kind],
@@ -394,6 +405,7 @@ function discoveryBase(
     ...bundles.map((bundle, i) => `\n=== Bundle ${i + 1} ===\n${bundleText(bundle)}`),
     ...(traceTree ? ["", "Structural trace tree:", traceTree] : []),
     ...(swaps ? ["", "Decoded swaps:", swaps] : []),
+    ...(gas ? ["", "Incident economics (gas & builder tip):", gas] : []),
   ].join("\n");
 }
 
@@ -409,6 +421,7 @@ app.post("/api/agent/discovery", async (req, res) => {
     question?: string;
     traceTree?: string;
     swaps?: string;
+    gas?: string;
     model?: unknown;
     reset?: boolean;
   };
@@ -428,7 +441,13 @@ app.post("/api/agent/discovery", async (req, res) => {
     return;
   }
   const model = pickModel(body.model);
-  const base = discoveryBase(kind, bundles, body.traceTree?.trim() ?? "", body.swaps?.trim() ?? "");
+  const base = discoveryBase(
+    kind,
+    bundles,
+    body.traceTree?.trim() ?? "",
+    body.swaps?.trim() ?? "",
+    body.gas?.trim() ?? "",
+  );
   const modelList = await listModels();
   const selectedModel = model ?? modelList.default ?? undefined;
   const contextWindow =
@@ -489,6 +508,9 @@ app.post("/api/agent/discovery", async (req, res) => {
         transcriptHeader: [`Discovery: ${kind}`, `Bundles: ${bundles.length}`],
         model,
         systemPromptSuffix: DISCOVERY_PROMPTS[kind],
+        // ADR-013 §6/§8: stream reasoning and offer the read-only cast tool.
+        thinkingLevel: "low",
+        enableCast: true,
       },
       (event) => {
         if (event.type === "done") report = event.report;

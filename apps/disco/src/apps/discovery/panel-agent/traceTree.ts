@@ -72,6 +72,82 @@ export async function buildTraceTreeContext(
   return sections.join('\n\n')
 }
 
+function fmtEth(wei: bigint): string {
+  // 6-dp fixed ETH from wei, without floating-point drift.
+  const neg = wei < 0n
+  const abs = neg ? -wei : wei
+  const whole = abs / 10n ** 18n
+  const frac = (abs % 10n ** 18n) / 10n ** 12n // keep 6 decimals
+  const s = `${whole}.${frac.toString().padStart(6, '0')}`
+  return `${neg ? '-' : ''}${s} ETH`
+}
+
+function toBig(v: string | null | undefined): bigint | undefined {
+  if (v === null || v === undefined || v === '') return undefined
+  try {
+    return BigInt(v)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * DIVERGENCE(mev): per-leg incident economics — gas fee and builder tip
+ * (coinbase transfer) — sourced from the explorer's decoded miner_payments via
+ * getTxMev (ADR-013 §7). Primary target is the bundle-prep ("baseline") prompt;
+ * the Discovery verdict base also receives it. Returns '' when there is no
+ * inspected incident to describe (plain project route, uninspected block).
+ */
+export async function buildGasContext(
+  txHash: string | undefined,
+): Promise<string> {
+  if (!txHash) return ''
+  let workspace: Awaited<ReturnType<typeof getTraceWorkspace>>
+  try {
+    workspace = await getTraceWorkspace(txHash)
+  } catch {
+    return ''
+  }
+  const legs =
+    workspace.legs.length > 0
+      ? workspace.legs
+      : [{ txHash, role: 'root' as const, viaType: null }]
+
+  const sections: string[] = []
+  for (const leg of legs) {
+    let mev: Awaited<ReturnType<typeof getTxMev>>
+    try {
+      mev = await getTxMev(leg.txHash)
+    } catch {
+      continue
+    }
+    const tx = mev.transaction
+    if (!tx) continue
+    const gasUsed = toBig(tx.gasUsed)
+    const gasPrice = toBig(tx.gasPriceWei)
+    const baseFee = toBig(tx.baseFeePerGasWei)
+    const coinbase = toBig(tx.coinbaseTransferWei)
+    if (gasUsed === undefined && coinbase === undefined) continue
+
+    const lines: string[] = []
+    if (gasUsed !== undefined && gasPrice !== undefined) {
+      const gasFee = gasUsed * gasPrice
+      lines.push(`- Gas fee: ${fmtEth(gasFee)} (gasUsed ${gasUsed}, gasPrice ${gasPrice} wei)`)
+      if (baseFee !== undefined) {
+        const priority = gasUsed * (gasPrice > baseFee ? gasPrice - baseFee : 0n)
+        const burned = gasUsed * baseFee
+        lines.push(`  base fee burned ${fmtEth(burned)}, priority fee to builder ${fmtEth(priority)}`)
+      }
+    }
+    if (coinbase !== undefined) {
+      lines.push(`- Builder tip (coinbase transfer): ${fmtEth(coinbase)}`)
+    }
+    if (lines.length === 0) continue
+    sections.push(`# Leg ${leg.role} (${short(leg.txHash)})\n${lines.join('\n')}`)
+  }
+  return sections.join('\n\n')
+}
+
 function amount(a: FormattedAmount | null | undefined): string {
   if (!a) return '?'
   return `${a.value} ${a.symbol}`

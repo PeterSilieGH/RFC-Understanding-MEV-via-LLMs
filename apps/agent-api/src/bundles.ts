@@ -98,13 +98,19 @@ export function buildBundlePrompt(
   contract: BundleContractInput,
   kinds: ResearchKind[],
   targetTokens: number,
+  gas?: string,
 ): string {
   return [
     "Create compact, durable contract-analysis bundles grounded only in the supplied code and state.",
     `Return JSON only: {\"bundles\":[{\"kind\":\"mev|vuln\",\"role\":\"...\",\"entryPoints\":[\"...\"],\"flowSummary\":\"...\",\"notes\":\"...\"}]}.`,
     `Return exactly these kinds in this single response: ${kinds.join(", ")}.`,
     `Keep each bundle under approximately ${targetTokens} tokens. For mev, focus on ordering/value-extraction relevance. For vuln, focus on trust boundaries, authorization, external calls, accounting, upgradeability, and invariant risks. Do not assert unsupported permissions.`,
+    // ADR-013 §8: the read-only foundry cast tool is available for grounding.
+    "You may call the read-only `cast` tool for on-chain facts (storage/balances/eth_call/token metadata) the supplied material lacks; cite anything you use.",
     `Contract: ${contract.name ?? "unknown"} (${contract.address})`,
+    // ADR-013 §7: the incident economics that this contract participated in, so
+    // mev bundles judge extraction relevance against how the incident paid.
+    ...(gas ? ["", "Incident economics (gas & builder tip):", gas] : []),
     "",
     "Verified-code signature index (use get_function_code for grounded bodies):",
     formatSignatureList(parseFunctionSignatures(contract.codeContext)),

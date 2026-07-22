@@ -1,12 +1,8 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import {
-  type FormattedAmount,
-  getTxMev,
-  traceWorkspaceQueryOptions,
-} from '../../../api/traces'
+import { traceWorkspaceQueryOptions } from '../../../api/traces'
 import { Button } from '../../../components/Button'
 import { IS_READONLY } from '../../../config/readonly'
 import { IconClose } from '../../../icons/IconClose'
@@ -15,7 +11,6 @@ import { IconRefresh } from '../../../icons/IconRefresh'
 import { useTerminalStore } from '../panel-terminal/store'
 import { useDiscoveryCommand } from '../panel-terminal/useDiscoveryCommand'
 import { useResearchStore } from '../panel-agent/research-store'
-import { fmtAmount } from '../panel-trace/mev-format'
 import { Search } from '../search/Search'
 import { SettingsDialog } from './SettingsDialog'
 // DIVERGENCE(mev): store resolved via context so the trace workspace
@@ -23,22 +18,14 @@ import { SettingsDialog } from './SettingsDialog'
 import { addPanel, useActiveDockingStore } from './store'
 
 // DIVERGENCE(mev): in the trace workspace the bar shows the incident
-// identity - MEV type plus the value extracted (first MEV entry carrying a
-// profit across the incident's legs) - instead of the synthetic project
-// name (ADR-008, wp-trace-polish). Falls back to the short tx hash while
-// MEV facts load or when no profit is attributed.
+// identity - the MEV type plus the short tx hash - instead of the synthetic
+// project name (ADR-008, wp-trace-polish). The extracted-value figure was
+// removed from the bar (ADR-013 §1); value lives on the explorer timeline and
+// the Values/Discovery surfaces.
 function useIncidentIdentity(): ReactNode | undefined {
   const { txHash } = useParams()
   const workspace = useQuery(traceWorkspaceQueryOptions(txHash))
   const legs = workspace.data?.legs ?? []
-  const mevQueries = useQueries({
-    queries: legs.map((leg) => ({
-      queryKey: ['mev-tx', leg.txHash],
-      queryFn: () => getTxMev(leg.txHash),
-      staleTime: 30_000,
-      retry: 1,
-    })),
-  })
   if (!txHash) return undefined
 
   const viaTypes = legs
@@ -48,22 +35,9 @@ function useIncidentIdentity(): ReactNode | undefined {
     ? 'sandwich'
     : (viaTypes[0]?.split('_')[0] ?? 'trace')
 
-  let profit: FormattedAmount | undefined
-  for (const query of mevQueries) {
-    profit = query.data?.transaction?.mev.find((entry) => entry.profit)?.profit ?? undefined
-    if (profit) break
-  }
-
   return (
     <p>
-      {kind} ·{' '}
-      {profit ? (
-        <span className={profit.value < 0 ? 'text-aux-red' : 'text-aux-green'}>
-          {fmtAmount(profit)}
-        </span>
-      ) : (
-        `${txHash.slice(0, 10)}…`
-      )}
+      {kind} · {`${txHash.slice(0, 10)}…`}
     </p>
   )
 }

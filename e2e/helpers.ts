@@ -40,6 +40,14 @@ export function anyArbitrageBlock(): number | null {
   return out ? Number(out) : null;
 }
 
+/** An inspected arbitrage transaction that paid a non-zero builder tip
+ * (coinbase transfer), so its incident economics are interesting, or null. */
+export function anyArbitrageTxWithTip(): string | null {
+  return psql(
+    "SELECT a.transaction_hash FROM arbitrages a JOIN miner_payments m ON m.transaction_hash = a.transaction_hash WHERE m.coinbase_transfer > 0 ORDER BY m.coinbase_transfer DESC LIMIT 1",
+  );
+}
+
 /** A block containing at least one sandwich (a multi-tx incident), or null. */
 export function anySandwichBlock(): number | null {
   const out = psql("SELECT block_number FROM sandwiches ORDER BY block_number DESC LIMIT 1");

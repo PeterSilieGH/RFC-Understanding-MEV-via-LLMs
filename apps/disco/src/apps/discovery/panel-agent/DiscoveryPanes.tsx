@@ -1,8 +1,12 @@
 // DIVERGENCE(mev): ADR-012 autonomous, typed Discovery surfaces. One shared
 // preparation pass emits all active bundle kinds (jointly per unknown contract),
 // then each kind gets its own selectable context and persistent conversation.
+// ADR-013: research kinds are hideable tabs (§3), the follow-up input submits on
+// Enter (§4), the bundle set is never inner-scrolled (§5), reasoning streams
+// into a fixed-height output window (§6), and incident gas/tip context reaches
+// the prep + verdict prompts (§7).
 import { useQuery } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
   type AgentStreamEvent,
@@ -23,8 +27,17 @@ import {
   activeResearchKinds,
   useResearchStore,
 } from './research-store'
-import { buildSwapContext, buildTraceTreeContext } from './traceTree'
+import {
+  buildGasContext,
+  buildSwapContext,
+  buildTraceTreeContext,
+} from './traceTree'
 import { useAgentMarksStore } from './store'
+
+const KIND_TITLE: Record<ResearchKind, string> = {
+  mev: 'MEV Discovery',
+  vuln: 'Vulnerability Discovery',
+}
 
 export function DiscoveryPanes(props: { project: string }) {
   const { project } = props
@@ -40,6 +53,13 @@ export function DiscoveryPanes(props: { project: string }) {
   >([])
   const abortRef = useRef<AbortController | undefined>(undefined)
   const addBundleMarks = useAgentMarksStore((state) => state.addBundleMarks)
+
+  // ADR-013 §3: which kind's pane is shown, and whether it is collapsed. The
+  // active kind is clamped to the currently-active research kinds on render.
+  const [activeTab, setActiveTab] = useState<ResearchKind | undefined>(kinds[0])
+  const [collapsed, setCollapsed] = useState(false)
+  const activeKind =
+    activeTab && kinds.includes(activeTab) ? activeTab : kinds[0]
 
   const prepare = useCallback(async () => {
     abortRef.current?.abort()
@@ -57,10 +77,13 @@ export function DiscoveryPanes(props: { project: string }) {
     setWarnings([])
     setBundles([])
     try {
-      const contracts = await buildAutonomousContracts(project)
+      const [contracts, gas] = await Promise.all([
+        buildAutonomousContracts(project),
+        buildGasContext(txHash),
+      ])
       if (contracts.length === 0) throw new Error('No verified contract source is available')
       const stream = streamPrepareBundles(
-        { project, kinds, contracts, model },
+        { project, kinds, contracts, gas, model },
         controller.signal,
       )
       const byKey = new Map<string, ContractBundle>()
@@ -88,7 +111,7 @@ export function DiscoveryPanes(props: { project: string }) {
     } finally {
       if (!controller.signal.aborted) setPreparing(false)
     }
-  }, [project, kinds.join(','), model?.provider, model?.id, addBundleMarks])
+  }, [project, txHash, kinds.join(','), model?.provider, model?.id, addBundleMarks])
 
   useEffect(() => {
     void prepare()
@@ -126,17 +149,50 @@ export function DiscoveryPanes(props: { project: string }) {
           Select MEV Research or Vulnerability Research to prepare grounded bundles.
         </p>
       )}
-      {kinds.map((kind) => (
+
+      {/* ADR-013 §3: one tab per active kind. Clicking the active tab collapses
+          it; clicking another selects it. */}
+      {kinds.length > 0 && (
+        <div className="flex items-stretch gap-px border-coffee-600 border-b bg-coffee-900">
+          {kinds.map((kind) => {
+            const isActive = kind === activeKind && !collapsed
+            return (
+              <button
+                type="button"
+                key={kind}
+                aria-pressed={isActive}
+                className={
+                  isActive
+                    ? 'border-autumn-300 border-b-2 px-3 py-1.5 font-bold text-coffee-100 text-xs uppercase'
+                    : 'border-transparent border-b-2 px-3 py-1.5 text-coffee-300 text-xs uppercase hover:text-coffee-100'
+                }
+                onClick={() => {
+                  if (kind === activeKind) {
+                    setCollapsed((value) => !value)
+                  } else {
+                    setActiveTab(kind)
+                    setCollapsed(false)
+                  }
+                }}
+              >
+                {KIND_TITLE[kind]}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {activeKind && !collapsed && (
         <DiscoveryKind
-          key={kind}
+          key={activeKind}
           project={project}
           incident={txHash ?? project}
           txHash={txHash}
-          kind={kind}
-          bundles={bundles.filter((bundle) => bundle.kind === kind)}
+          kind={activeKind}
+          bundles={bundles.filter((bundle) => bundle.kind === activeKind)}
           preparing={preparing}
         />
-      ))}
+      )}
     </div>
   )
 }
@@ -159,6 +215,8 @@ function DiscoveryKind(props: {
   const [excluded, setExcluded] = useState<string[]>([])
   const [selectionDirty, setSelectionDirty] = useState(false)
   const [live, setLive] = useState('')
+  const [reasoning, setReasoning] = useState('')
+  const [reasoningOpen, setReasoningOpen] = useState(true)
   const [question, setQuestion] = useState('')
   const [running, setRunning] = useState(false)
   const [queued, setQueued] = useState(false)
@@ -186,11 +244,13 @@ function DiscoveryKind(props: {
       setQueued(false)
       setError(null)
       setLive('')
+      setReasoning('')
       let succeeded = true
       try {
-        const [traceTree, swaps] = await Promise.all([
+        const [traceTree, swaps, gas] = await Promise.all([
           buildTraceTreeContext(txHash),
           buildSwapContext(txHash),
+          buildGasContext(txHash),
         ])
         const stream = streamDiscovery(
           {
@@ -201,6 +261,7 @@ function DiscoveryKind(props: {
             question: followup,
             traceTree,
             swaps,
+            gas,
             model,
           },
           controller.signal,
@@ -220,6 +281,9 @@ function DiscoveryKind(props: {
         if (event.type === 'delta') {
           setLive((value) => value + event.text)
           setQueued(false)
+        } else if (event.type === 'reasoning') {
+          setReasoning((value) => value + event.text)
+          setQueued(false)
         } else if (event.type === 'queued') setQueued(true)
         else if (event.type === 'error') {
           succeeded = false
@@ -230,12 +294,17 @@ function DiscoveryKind(props: {
     [project, incident, kind, txHash, running, selected.map((b) => b.codehash).join(','), model?.provider, model?.id],
   )
 
+  const submitFollowup = () => {
+    const value = question.trim()
+    if (running || !value) return
+    setQuestion('')
+    void run(value)
+  }
+
   const turns = selectionDirty ? [] : (stored.data?.turns ?? [])
-  const title = kind === 'mev' ? 'MEV Discovery' : 'Vulnerability Discovery'
   return (
-    <section className="flex flex-col gap-2 border-coffee-600 border-t p-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-bold text-coffee-300 text-xs uppercase">{title}</span>
+    <section className="flex flex-col gap-2 p-2">
+      <div className="flex items-center justify-end">
         <Button
           size="small"
           variant="solid"
@@ -256,7 +325,8 @@ function DiscoveryKind(props: {
         </div>
       </div>
 
-      <div className="max-h-32 overflow-auto border border-coffee-600">
+      {/* ADR-013 §5: every bundle is visible — no inner scrollbar. */}
+      <div className="border border-coffee-600">
         {bundles.length === 0 && !preparing ? (
           <p className="p-2 text-coffee-400 text-xs italic">No {kind} bundles available.</p>
         ) : bundles.map((bundle) => {
@@ -287,30 +357,50 @@ function DiscoveryKind(props: {
 
       {queued && <span className="text-coffee-400 text-xs">Queued behind another agent run…</span>}
       {error && <pre className="whitespace-pre-wrap text-aux-red text-xs">{error}</pre>}
-      {turns.map((turn, index) => (
-        <div key={`${turn.role}-${index}`} className={turn.role === 'user' ? 'border-coffee-600 border-l-2 pl-2 text-coffee-400 text-xs' : ''}>
-          {turn.role === 'assistant' ? <Markdown allowHtml={false}>{turn.text}</Markdown> : turn.text}
+
+      {/* ADR-013 §6: reasoning + verdict live in a fixed-height scroll window so
+          a long verdict scrolls in place instead of growing the pane. */}
+      {(reasoning || turns.length > 0 || (live && running)) && (
+        <div className="h-64 overflow-auto border border-coffee-700 bg-coffee-900 p-2">
+          {reasoning && (
+            <div className="mb-2 border-coffee-700 border-b pb-2">
+              <button
+                type="button"
+                className="text-coffee-400 text-[11px] uppercase hover:text-coffee-200"
+                onClick={() => setReasoningOpen((value) => !value)}
+              >
+                {reasoningOpen ? '▾' : '▸'} Reasoning
+              </button>
+              {reasoningOpen && (
+                <pre className="mt-1 whitespace-pre-wrap text-coffee-500 text-[11px] italic">
+                  {reasoning}
+                </pre>
+              )}
+            </div>
+          )}
+          {turns.map((turn, index) => (
+            <div key={`${turn.role}-${index}`} className={turn.role === 'user' ? 'border-coffee-600 border-l-2 pl-2 text-coffee-400 text-xs' : 'text-xs'}>
+              {turn.role === 'assistant' ? <Markdown allowHtml={false}>{turn.text}</Markdown> : turn.text}
+            </div>
+          ))}
+          {live && running && <Markdown allowHtml={false}>{live}</Markdown>}
         </div>
-      ))}
-      {live && running && <Markdown allowHtml={false}>{live}</Markdown>}
+      )}
+
       {turns.length > 0 && (
-        <div className="flex gap-1">
-          <textarea
-            className="min-h-10 flex-1 resize-y border border-coffee-600 bg-coffee-900 p-2 text-xs outline-none"
-            value={question}
-            onChange={(event) => setQuestion(event.target.value)}
-            placeholder={`Ask a follow-up in this persistent ${kind} session…`}
-          />
-          <Button
-            size="small"
-            disabled={running || !question.trim()}
-            onClick={() => {
-              const value = question.trim()
-              setQuestion('')
-              void run(value)
-            }}
-          >Ask</Button>
-        </div>
+        // ADR-013 §4: Enter submits, Shift+Enter inserts a newline; no [Ask].
+        <textarea
+          className="min-h-10 w-full resize-y border border-coffee-600 bg-coffee-900 p-2 text-xs outline-none"
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              submitFollowup()
+            }
+          }}
+          placeholder={`Ask a follow-up in this persistent ${kind} session… (Enter to send · Shift+Enter for newline)`}
+        />
       )}
     </section>
   )

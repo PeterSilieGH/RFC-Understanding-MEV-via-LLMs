@@ -11,7 +11,6 @@ import type {
 } from '../../../api/types'
 import { Checkbox } from '../../../components/Checkbox'
 import { LoadingState } from '../../../components/LoadingState'
-import { DiscoveryPanes } from '../panel-agent/DiscoveryPanes'
 import { AddressDisplay } from '../panel-values/AddressDisplay'
 import { usePanelStore } from '../store/panel-store'
 
@@ -32,9 +31,9 @@ export function PreviewPanel() {
 
   return (
     <div className="flex h-full w-full flex-col text-sm">
-      {/* DIVERGENCE(mev): the agentic verdict for this transaction/incident
-          (ADR-009) sits above the stock preview. */}
-      <DiscoveryPanes project={project} />
+      {/* DIVERGENCE(mev): the agentic Discovery surfaces moved to their own
+          `preview`/"Discovery" panel (ADR-013 §2); this panel is now the stock
+          permissions/contracts preview artifact only. */}
       {response === undefined ? (
         <LoadingState />
       ) : (

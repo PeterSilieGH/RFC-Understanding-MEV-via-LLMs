@@ -10,6 +10,7 @@ import {
 } from '../../../components/docking'
 import { IS_READONLY } from '../../../config/readonly'
 import { IconChecked } from '../../../icons/IconChcked'
+import { IconChatbot } from '../../../icons/IconChatbot'
 import { IconChevronDown } from '../../../icons/IconChevronDown'
 import { IconCode } from '../../../icons/IconCode'
 import { IconFileDiff } from '../../../icons/IconFileDiff'
@@ -20,6 +21,7 @@ import { IconSigma } from '../../../icons/IconSigma'
 import { IconStamp } from '../../../icons/IconStamp'
 import { IconTerminal } from '../../../icons/IconTerminal'
 import { IconWebApp } from '../../../icons/IconWebApp'
+import { DiscoveryPanel } from '../panel-agent/DiscoveryPanel'
 import { CodePanel } from '../panel-code/CodePanel'
 import { ConfigPanel } from '../panel-config/ConfigPanel'
 import { DiffHistoryPanel } from '../panel-diff-history/DiffHistoryPanel'
@@ -33,12 +35,14 @@ import { ValuesPanel } from '../panel-values/ValuesPanel'
 import { TabExtras } from './TabExtras'
 
 // DIVERGENCE(mev): tab order is the MEV workflow order — pick nodes (list /
-// nodes), analyze them (analyze), read the incident verdict (preview →
-// "incident"), then drill into code / values — followed by the stock tools.
+// nodes), read the Discovery verdict (preview → "Discovery"), see the stock
+// permissions/contracts (contracts → "Preview"), then drill into code / values
+// — followed by the stock tools.
 export const PANEL_IDS = [
   'list',
   'nodes',
   'preview',
+  'contracts',
   'code',
   'values',
   'terminal',
@@ -51,9 +55,12 @@ export type PanelId = (typeof PANEL_IDS)[number]
 
 // DIVERGENCE(mev): display labels that differ from the panel id. The id stays
 // stable (storage keys, persisted layouts) while the tab shows a friendlier
-// name — the Preview panel is the MEV "Incident" view (ADR-009).
+// name. Panel id `preview` is the agentic "Discovery" view (ADR-009/012); the
+// stock permissions/contracts artifact split out into `contracts` = "Preview"
+// (ADR-013 §2).
 const PANEL_LABELS: Partial<Record<PanelId, string>> = {
   preview: 'Discovery',
+  contracts: 'Preview',
 }
 
 interface Panel {
@@ -70,7 +77,10 @@ const PANELS: Record<PanelId, Panel> = {
   // execution-trace graph; in a project it stays the dependency graph
   nodes: { icon: IconNodes, body: NodesTracePanel },
   code: { icon: IconCode, body: CodePanel },
-  preview: { icon: IconWebApp, body: PreviewPanel },
+  // DIVERGENCE(mev): `preview` id now hosts the agentic Discovery surfaces; the
+  // stock preview artifact moved to `contracts` (ADR-013 §2).
+  preview: { icon: IconChatbot, body: DiscoveryPanel },
+  contracts: { icon: IconWebApp, body: PreviewPanel },
   terminal: { icon: IconTerminal, body: TerminalPanel },
   template: { icon: IconStamp, body: TemplatePanel },
   config: { icon: IconGear, body: ConfigPanel },

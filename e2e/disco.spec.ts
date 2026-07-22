@@ -1,8 +1,14 @@
 import { expect, test } from "@playwright/test";
-import { anyRecentTxHash, anySandwichFrontrunTxHash, anySwapTxHash } from "./helpers.js";
+import {
+  anyArbitrageTxWithTip,
+  anyRecentTxHash,
+  anySandwichFrontrunTxHash,
+  anySwapTxHash,
+} from "./helpers.js";
 
 const DISCO_WEB = `http://localhost:${process.env.DISCO_WEB_PORT || 8082}`;
 const DISCO_API = `http://localhost:${process.env.DISCO_API_PORT || 2021}`;
+const AGENT_API = `http://localhost:${process.env.AGENT_API_PORT || 3100}`;
 
 test.describe("disco-api (l2b ui from the submodule)", () => {
   test("health responds", async ({ request }) => {
@@ -178,5 +184,117 @@ test.describe("trace workspace (ADR-008)", () => {
     });
     // ...synthetic ones do not
     await expect(page.getByText(synthetic[0].name, { exact: false })).toHaveCount(0);
+  });
+});
+
+// ADR-013: Discovery UX refinements. These drive the same live disco-web stack.
+test.describe("ADR-013 Discovery UX refinements", () => {
+  async function firstRealProject(request: import("@playwright/test").APIRequestContext) {
+    const projects = await (await request.get(`${DISCO_API}/api/projects`)).json();
+    return projects.find((c: { name: string }) => !c.name.startsWith("trace-"))?.name as
+      | string
+      | undefined;
+  }
+
+  test("U2: the panel switcher lists Discovery and a separate Preview panel", async ({
+    page,
+    request,
+  }) => {
+    const project = await firstRealProject(request);
+    expect(project).toBeTruthy();
+    await page.goto(`${DISCO_WEB}/ui/p/${project}`);
+    const switcher = page.getByRole("combobox", { name: "Panel" }).nth(2);
+    await switcher.click({ timeout: 20_000 });
+    // preview id → "Discovery" (agentic surfaces); new contracts id → "Preview"
+    await expect(page.getByRole("option", { name: "Discovery" })).toBeVisible();
+    await expect(page.getByRole("option", { name: "Preview", exact: true })).toBeVisible();
+  });
+
+  test("U3/U5: research kinds are hideable tabs and the bundle set is not inner-scrolled", async ({
+    page,
+    request,
+  }) => {
+    const project = await firstRealProject(request);
+    expect(project).toBeTruthy();
+    await page.goto(`${DISCO_WEB}/ui/p/${project}`);
+
+    // dock a Discovery panel
+    const switcher = page.getByRole("combobox", { name: "Panel" }).nth(2);
+    await switcher.click({ timeout: 20_000 });
+    await page.getByRole("option", { name: "Discovery" }).click();
+    await expect(switcher).toHaveText(/Discovery/);
+
+    // turn on MEV Research → a "MEV Discovery" tab and its pane (context meter) appear
+    await page.getByRole("button", { name: "MEV Research" }).click();
+    const tab = page.getByRole("button", { name: "MEV Discovery" });
+    await expect(tab).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Context:.*tokens/)).toBeVisible({ timeout: 15_000 });
+
+    // clicking the active tab collapses it (pane content hidden), tab remains
+    await tab.click();
+    await expect(page.getByText(/Context:.*tokens/)).toHaveCount(0);
+    await expect(tab).toBeVisible();
+
+    // clicking again re-opens it
+    await tab.click();
+    await expect(page.getByText(/Context:.*tokens/)).toBeVisible();
+  });
+
+  test("U1: the trace-workspace top bar shows kind + hash with no extracted-value figure", async ({
+    page,
+  }) => {
+    // first open runs a bounded discovery; give it room
+    test.setTimeout(300_000);
+    const txHash = anyArbitrageTxWithTip();
+    test.skip(txHash === null, "no arbitrage with a builder tip in the shared postgres");
+
+    await page.goto(`${DISCO_WEB}/ui/trace/${txHash}`);
+    await page.waitForURL(/\/ui\/trace\/0x[0-9a-f]{64}\/trace-[0-9a-f]{8}$/, {
+      timeout: 240_000,
+    });
+    // identity reads "<kind> · 0x1234abcd…" — a kind, a separator, a short hash…
+    const identity = page.getByText(/^\w+ · 0x[0-9a-f]{8}…$/);
+    await expect(identity).toBeVisible({ timeout: 30_000 });
+    // …and NOT the old value figure (no Ξ / ETH amount in the bar identity)
+    await expect(identity).not.toContainText("Ξ");
+    await expect(identity).not.toContainText("ETH");
+  });
+
+  test("U4: the Discovery follow-up submits on Enter and newlines on Shift+Enter", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(300_000);
+    const txHash = anyArbitrageTxWithTip();
+    test.skip(txHash === null, "no arbitrage with a builder tip in the shared postgres");
+    const project = `trace-${(txHash as string).slice(2, 10)}`;
+    // the follow-up textarea only renders once a verdict session exists
+    const sessionRes = await request.get(
+      `${AGENT_API}/api/agent/discovery/session?project=${project}&incident=${txHash}&kind=mev`,
+    );
+    const session = sessionRes.ok() ? (await sessionRes.json()).session : null;
+    test.skip(
+      !session || session.turns.length === 0,
+      "no persisted mev Discovery verdict for this incident yet",
+    );
+
+    await page.goto(`${DISCO_WEB}/ui/trace/${txHash}`);
+    await page.waitForURL(/\/ui\/trace\/0x[0-9a-f]{64}\/trace-[0-9a-f]{8}$/, {
+      timeout: 240_000,
+    });
+    const switcher = page.getByRole("combobox", { name: "Panel" }).nth(2);
+    await switcher.click({ timeout: 20_000 });
+    await page.getByRole("option", { name: "Discovery" }).click();
+    await page.getByRole("button", { name: "MEV Research" }).click();
+
+    const box = page.getByPlaceholder(/Enter to send/);
+    await expect(box).toBeVisible({ timeout: 30_000 });
+    await box.click();
+    await box.pressSequentially("alpha");
+    await box.press("Shift+Enter"); // newline, must NOT submit
+    await box.pressSequentially("beta");
+    await expect(box).toHaveValue("alpha\nbeta");
+    await box.press("Enter"); // submits → input clears
+    await expect(box).toHaveValue("");
   });
 });
