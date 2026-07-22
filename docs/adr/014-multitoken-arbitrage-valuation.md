@@ -114,3 +114,17 @@ aggregated value simply flows through the toggle already in place.
   `attachProfitEur`) still sums the single stored profit token; aligning it with
   the multi-token model is a follow-up noted in the WP, out of scope here to keep
   the change reviewable.
+- **Negative aggregates are legitimate.** A cyclic arbitrage the detector records
+  can be a *losing* round-trip (its own `profit_amount` = `end_amount` −
+  `start_amount` is negative — a sandwiched or failed arb). The aggregate then
+  nets **negative**, and a timeline bucket dominated by such arbs shows negative
+  extracted value. This is not new to ADR-014: the old WETH-only `SUM` summed the
+  same negative `profit_amount`, so the sign is preserved, not introduced. The
+  valuation deliberately does **not** clamp to zero — clamping would hide losing
+  arbs and diverge from the detector's own sign. (The `/api/mev-value` E2E asserts
+  `Number.isFinite`, not `>= 0`, for this reason.)
+- **Route reconstruction uses `arbitrage_swaps`, not the whole tx.** The WP
+  refined §1's "join by `transaction_hash`" assumption: the detector *does* persist
+  the arb's exact route legs in `arbitrage_swaps` (`swap_trace_address`), so the
+  delta is summed over those legs (joined on `transaction_hash` **and**
+  `trace_address`), which avoids over-attributing unrelated swaps in a mixed tx.

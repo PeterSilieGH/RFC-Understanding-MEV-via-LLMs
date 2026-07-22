@@ -114,9 +114,42 @@ styles if needed (`style.css`).
   method badges, (c) the Wiki tab shows the new section. Rebuild the
   `explorer-api`/`explorer-web` containers first.
 
+## Outcome (implemented)
+
+Landed on `feat/arbitrage-multitoken-valuation`. New modules
+`apps/explorer-api/src/onchainPrices.ts` (block-derived WETH-numeraire price
+graph + provenance) and `arbValue.ts` (route delta via `arbitrage_swaps` join,
+per-block and range valuation); wired into `backfill.ts` (`valueArbitragesInRange`
+replaces the WETH-only arbitrage `CASE`), `mev.ts` (`ethValue`/`pricedBreakdown`/
+`unpricedTokens`), `app.js` (aggregate value + delta table + method badges + Wiki
+section) and `style.css`.
+
+Two refinements surfaced during implementation:
+
+- **Dust filtering is value-based, not unit-based.** The first cut compared raw
+  bigint deltas, which wrongly dropped a meaningful leg when tokens had different
+  decimals/prices (0.05 WETH ≫ 1200 USDC in raw units yet worth less). `valueArb`
+  now dust-drops **priced** legs by ETH-value share and only falls back to
+  unit-share for **unpriced** legs (to kill 1-wei hop residuals). Covered by the
+  `valueArb` unit tests.
+- **Negative aggregates are real.** A losing cyclic arb (detector
+  `profit_amount` = end − start < 0) yields a negative aggregate; the old
+  WETH-only sum did the same, so the sign is preserved, not introduced. Not
+  clamped. The `/api/mev-value` E2E asserts `Number.isFinite`, not `>= 0`.
+
+Verified live: the USDT-only arb in #25590036 gained a non-zero `ethValue` where
+the WETH-only sum was 0; the SNX+WETH arb in #25590056 aggregates to 6.37e-05 Ξ
+vs the detector's single-token 5.37e-05 WETH (the SNX leg was previously
+invisible). E2E in `e2e/explorer.spec.ts` (`multiTokenArbitrageBlocks` helper):
+API aggregate == Σ priced legs + valid provenance; block-view detail shows
+aggregate + delta table + badge; Wiki tab shows the three method badges.
+
 ## Out of scope (follow-ups)
 
 - Aligning `insights.ts` `attachProfitEur` (searcher ranking) with the
   multi-token model — still sums the single stored profit token.
 - Extending multi-token aggregation to sandwich/liquidation series.
 - Persisting deltas/prices (kept query-time per ADR-014 valuation-only scope).
+- The losing-cyclic-arb negative values are faithful to the detector; whether the
+  arbitrage *detector* should flag such round-trips at all is a detection-track
+  question, not a valuation one.

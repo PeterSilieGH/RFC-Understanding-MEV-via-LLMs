@@ -263,6 +263,39 @@ function displayValue(ethValue) {
   return { value: ethValue, unit: "Ξ" };
 }
 
+// An ETH-denominated value rendered through the EUR/ETH toggle with its unit
+// label attached (ADR-014 aggregate arbitrage value + per-token breakdown).
+function fmtEthValue(ethValue) {
+  if (ethValue == null) return "–";
+  const dv = displayValue(ethValue);
+  return `${fmtNumber(dv.value)} ${dv.unit === "EUR" ? "€" : "Ξ"}`;
+}
+
+// ADR-014 §2: how a token's ETH price was obtained, shown as a badge so the
+// figure's provenance is distinguishable.
+const PRICE_METHOD_TITLE = {
+  onchain: "Priced from this block's own swap rates, chained to WETH (block-exact)",
+  feed: "Priced from the CoinGecko feed (no in-block path to WETH)",
+  unpriced: "No price available — this token's delta is excluded from the total",
+};
+
+// The per-token net delta table for an arbitrage: what the searcher actually
+// netted across every token, each priced into the display unit, with a badge
+// naming the pricing method (ADR-014 §4).
+function arbBreakdown(m) {
+  const rows = (m.pricedBreakdown || []).map((item) => {
+    const sign = item.delta >= 0 ? "+" : "";
+    const value = item.method === "unpriced" ? "—" : fmtEthValue(item.ethValue);
+    const sym = item.symbol || `${item.token.slice(0, 6)}…`;
+    return `<div class="arb-delta-row">
+      <span class="arb-delta-token ${item.delta >= 0 ? "profit" : "loss"}">${sign}${fmtNumber(item.delta)} ${sym}</span>
+      <span class="arb-delta-value">${value}</span>
+      <span class="price-method price-method-${item.method}" title="${PRICE_METHOD_TITLE[item.method]}">${item.method}</span>
+    </div>`;
+  });
+  return `<div class="arb-breakdown">${rows.join("")}</div>`;
+}
+
 // For plain ETH amounts that don't go through fmtAmount (gas/tip/fee
 // figures computed client-side, with no token-address-bearing amount object).
 function fmtEth(value, decimals = 4) {
@@ -631,6 +664,28 @@ function buildLegend() {
     ${mevItems}
     <div class="legend-section-title">Mempool visibility</div>
     ${mempoolItems}
+    <div class="legend-section-title">How arbitrage value is priced</div>
+    <p class="legend-intro">An arbitrage rarely nets a single token. We value it by the
+      <strong>net delta across every token it moved</strong> — the exact route swaps, credited minus
+      debited — not just the one "profit token" the detector records. Each token's delta is priced into
+      ETH (the EUR/Ξ toggle then converts the total), and the method is shown as a badge so you can tell
+      how each figure was derived:</p>
+    <div class="legend-item">
+      <span class="badge price-method-onchain">onchain</span>
+      <p><strong>Block-exact.</strong> Priced from this same block's own swap rates, chained through to
+        WETH. No external data, historically faithful — the default whenever the token trades against a
+        WETH-reachable pool in the block.</p>
+    </div>
+    <div class="legend-item">
+      <span class="badge price-method-feed">feed</span>
+      <p><strong>External fallback.</strong> When a token has no in-block path to WETH, its price comes
+        from the CoinGecko feed (token/EUR ÷ WETH/EUR). Approximate and not block-exact.</p>
+    </div>
+    <div class="legend-item">
+      <span class="badge price-method-unpriced">unpriced</span>
+      <p><strong>Excluded.</strong> Neither source yields a price; that token's delta is flagged and left
+        out of the total rather than silently counted as zero.</p>
+    </div>
   `;
 }
 
@@ -921,6 +976,24 @@ function renderMevDetail(m) {
     case "arbitrage":
       rows.push(kv("Account", addrLink(m.accountAddress)));
       if (m.profit) rows.push(kv("Profit", profitSpan(m.profit)));
+      // ADR-014: the aggregate value across ALL tokens the arb netted, priced
+      // into ETH — the single "Profit" above is only the detector's cyclic
+      // token, which under-counts multi-token arbs.
+      if (m.ethValue != null)
+        rows.push(
+          kv(
+            '<span title="Net value across every token the arbitrage moved, each priced into ETH (ADR-014). \'Profit\' above is only the detector\'s single cyclic token.">Aggregate value (all tokens)</span>',
+            `<span class="${m.ethValue < 0 ? "loss" : "profit"}">${fmtEthValue(m.ethValue)}</span>`,
+          ),
+        );
+      if (m.pricedBreakdown?.length) rows.push(kv("Token deltas", arbBreakdown(m)));
+      if (m.unpricedTokens?.length)
+        rows.push(
+          kv(
+            "Unpriced",
+            `<span class="loss" title="Tokens with a net delta but no on-chain or feed price; excluded from the aggregate">${m.unpricedTokens.length} token(s) excluded</span>`,
+          ),
+        );
       // X6: the value the arbitrage removed from the mispriced pools — borne by
       // their LPs and the swap(s) that created the imbalance. For an atomic
       // arbitrage this equals the realized profit.

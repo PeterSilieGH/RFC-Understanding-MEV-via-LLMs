@@ -1,4 +1,5 @@
 import { pool } from "@mev/db";
+import { type ArbValuation, valueBlockArbitrages } from "./arbValue.js";
 import {
   getJitLiquidityForBlock,
   getLiquidationRacesForBlock,
@@ -66,6 +67,7 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
     liquidationSandwiches,
     liquidationRaces,
     nftFlips,
+    arbValuations,
   ] = await Promise.all([
     pool.query(
       `SELECT EXTRACT(EPOCH FROM block_timestamp) AS unix_ts
@@ -81,7 +83,7 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
       [blockNumber],
     ),
     pool.query(
-      `SELECT transaction_hash, account_address, profit_token_address,
+      `SELECT id, transaction_hash, account_address, profit_token_address,
               start_amount, end_amount, profit_amount, protocols, error
        FROM arbitrages WHERE block_number = $1`,
       [blockNumber],
@@ -122,6 +124,8 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
     getLiquidationSandwichesForBlock(blockNumber),
     getLiquidationRacesForBlock(blockNumber),
     getNftFlipsForBlock(blockNumber),
+    // ADR-014: per-arb multi-token ETH valuation (on-chain + feed fallback).
+    valueBlockArbitrages(blockNumber, { allowFeed: true }),
   ]);
 
   const byTx = new Map<string, BlockTransaction>();
@@ -164,6 +168,8 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
   }
 
   for (const row of arbitrageRows.rows) {
+    // ADR-014: the aggregated multi-token value + per-token pricing provenance.
+    const valuation = (arbValuations as Map<string, ArbValuation>).get(row.id);
     entry(row.transaction_hash).mev.push({
       type: "arbitrage",
       accountAddress: row.account_address,
@@ -173,6 +179,11 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
       endAmountRaw: row.end_amount,
       protocols: row.protocols,
       error: row.error,
+      // Aggregated ETH value across ALL tokens the arb netted (ADR-014), with a
+      // per-token breakdown carrying the pricing method (onchain/feed/unpriced).
+      ethValue: valuation?.ethValue ?? null,
+      pricedBreakdown: valuation?.breakdown ?? [],
+      unpricedTokens: valuation?.unpricedTokens ?? [],
       // Victim loss (X6): for an atomic arbitrage the realized profit equals
       // the value removed from the mispriced pools — borne by their LPs and by
       // the swap(s) that created the imbalance. Same token/amount as profit,
@@ -396,6 +407,14 @@ export async function getBlockMev(blockNumber: number): Promise<BlockTransaction
           m.victimLoss = await formatAmount(
             m.victimLossAmountRaw as string | null,
             m.victimLossTokenAddress as string | null,
+          );
+        }
+        // ADR-014: name the tokens in the arbitrage pricing breakdown.
+        if (Array.isArray(m.pricedBreakdown)) {
+          await Promise.all(
+            (m.pricedBreakdown as { token: string; symbol: string }[]).map(async (item) => {
+              item.symbol = (await getTokenInfo(item.token)).symbol;
+            }),
           );
         }
       }
