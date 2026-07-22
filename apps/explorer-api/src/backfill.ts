@@ -1,6 +1,7 @@
 import { loadConfig } from "@mev/config";
 import { pool } from "@mev/db";
 import { getProvider } from "@mev/rpc";
+import { valueArbitragesInRange } from "./arbValue.js";
 import { backgroundInspect, isInspected } from "./inspector.js";
 
 // Background inspection queue (wp-explorer-redesign E6): walks a block range
@@ -333,11 +334,14 @@ export async function getMevValueSeries(
     [from, to, size],
   );
 
-  const [blocksAgg, arbs, sandwiches, liquidations] = await Promise.all([
+  const [blocksAgg, arbs, sandwiches, liquidations, arbEthByBlock] = await Promise.all([
     inspected,
+    // arbitrage: keep the per-bucket COUNT from this agg; its WETH-only `wei` is
+    // discarded in favour of the ADR-014 multi-token valuation (arbEthByBlock).
     agg("arbitrages", "profit_amount", "profit_token_address"),
     agg("sandwiches", "profit_amount", "profit_token_address"),
     agg("liquidations", "received_amount", "received_token_address"),
+    valueArbitragesInRange(from, to),
   ]);
 
   const byBucket = new Map<number, MevValueBucket>();
@@ -368,7 +372,16 @@ export async function getMevValueSeries(
       b[countKey] += Number(row.n);
     }
   };
-  fold(arbs.rows, "arbitrageEth", "arbitrageCount");
+  // Arbitrage: COUNT from the table agg, ETH from the ADR-014 multi-token
+  // valuation (all tokens' priced delta, not just WETH profit).
+  for (const row of arbs.rows) {
+    const b = byBucket.get(Number(row.bucket));
+    if (b) b.arbitrageCount += Number(row.n);
+  }
+  for (const [block, eth] of arbEthByBlock) {
+    const b = byBucket.get(Math.floor(block / size) * size);
+    if (b) b.arbitrageEth += eth;
+  }
   fold(sandwiches.rows, "sandwichEth", "sandwichCount");
   fold(liquidations.rows, "liquidationEth", "liquidationCount");
 

@@ -541,6 +541,30 @@ tr.expanded .expand-arrow { transform: rotate(90deg); display: inline-block; }
 .badge.sandwiched_victim { color: var(--pink); }
 .badge.liquidation { color: var(--blue); }
 .badge.nft_trade, .badge.punk_snipe { color: var(--yellow); }
+
+/* ADR-014: pricing-method provenance badges + the per-token arbitrage delta table */
+.price-method {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: help;
+}
+.price-method-onchain { color: var(--green); }
+.price-method-feed { color: var(--blue); }
+.price-method-unpriced { color: var(--red); }
+.arb-breakdown { display: flex; flex-direction: column; gap: 2px; }
+.arb-delta-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.arb-delta-value { color: var(--muted); }
 .badge.jit_liquidity_add, .badge.jit_liquidity_remove { color: var(--teal); }
 .badge.non_atomic_arbitrage_open, .badge.non_atomic_arbitrage_close { color: var(--green); }
 .badge.liquidation_sandwich_setup, .badge.liquidation_sandwich_liquidate, .badge.liquidation_sandwich_reverse { color: var(--red); }
@@ -583,6 +607,14 @@ tr.expanded .expand-arrow { transform: rotate(90deg); display: inline-block; }
   margin: 3px 4px 0 0;
 }
 .swap-chip .arrow { color: var(--muted); }
+/* ADR-014: the feed-derived € notional appended to a swap chip in EUR mode */
+.swap-notional {
+  color: var(--blue);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+  padding-left: 2px;
+  border-left: 1px solid var(--border);
+}
 
 .empty-state {
   text-align: center;

@@ -4,9 +4,12 @@ import {
   EXPLORER_WEB,
   anyArbitrageBlock,
   anyArbitrageurAddress,
+  anyMultiTokenArbitrageBlock,
   anySandwichBlock,
+  anySandwichFrontrunWithSwap,
   anySwapTxHash,
   latestInspectedBlock,
+  multiTokenArbitrageBlocks,
 } from "./helpers.js";
 
 test.describe("explorer-api", () => {
@@ -192,7 +195,13 @@ test.describe("explorer-api", () => {
       ]) {
         expect(b).toHaveProperty(key);
       }
-      expect(b.arbitrageEth).toBeGreaterThanOrEqual(0);
+      // arbitrageEth is a finite ETH figure but NOT necessarily non-negative: a
+      // cyclic arbitrage the detector records can be a losing round-trip (its own
+      // profit_amount = end − start goes negative, e.g. a sandwiched/failed arb),
+      // so a bucket dominated by such arbs nets negative extracted value. This
+      // held for the old WETH-profit sum too and is preserved by the ADR-014
+      // multi-token aggregate (which equals the detector's sign on WETH-only arbs).
+      expect(Number.isFinite(b.arbitrageEth)).toBe(true);
       // every returned bucket contains at least one inspected block (gaps are
       // omitted, not valued at 0)
       expect(b.inspectedBlocks).toBeGreaterThan(0);
@@ -204,6 +213,58 @@ test.describe("explorer-api", () => {
     expect(
       (await request.get(`${EXPLORER_API}/api/mev-value?from=1&to=10&bucket=0`)).status(),
     ).toBe(400);
+  });
+
+  // ADR-014: an arbitrage is valued by the ETH-priced net delta across EVERY
+  // token its route moved, not just the single stored profit token.
+  test("block view aggregates a multi-token arbitrage's value with pricing provenance (ADR-014)", async ({
+    request,
+  }) => {
+    const candidates = multiTokenArbitrageBlocks();
+    test.skip(candidates.length === 0, "no multi-token arbitrages in the shared postgres");
+
+    interface Arb {
+      ethValue: number | null;
+      pricedBreakdown: { ethValue: number; method: string; symbol: string }[];
+      unpricedTokens: string[];
+      type: string;
+    }
+
+    // Walk recent multi-token-delta blocks until one still carries a >1-priced-
+    // token arbitrage after valuation (some second legs are legitimately value-
+    // dust-dropped), asserting the ADR-014 invariants on every arb seen.
+    let provedMultiToken = false;
+    for (const block of candidates) {
+      const res = await request.get(`${EXPLORER_API}/api/block/${block}`);
+      expect(res.ok()).toBe(true);
+      const { transactions } = (await res.json()) as { transactions: { mev: Arb[] }[] };
+      const arbs = transactions.flatMap((tx) => tx.mev).filter((m) => m.type === "arbitrage");
+
+      for (const m of arbs) {
+        expect(Array.isArray(m.pricedBreakdown)).toBe(true);
+        expect(Array.isArray(m.unpricedTokens)).toBe(true);
+        for (const item of m.pricedBreakdown) {
+          // pricing method is one of the three documented provenances
+          expect(["onchain", "feed", "unpriced"]).toContain(item.method);
+        }
+        if (m.ethValue !== null) {
+          // the aggregate equals the sum of the priced (non-unpriced) legs
+          const summed = m.pricedBreakdown
+            .filter((b) => b.method !== "unpriced")
+            .reduce((acc, b) => acc + b.ethValue, 0);
+          expect(m.ethValue).toBeCloseTo(summed, 9);
+        }
+      }
+
+      if (arbs.some((m) => m.pricedBreakdown.filter((b) => b.method !== "unpriced").length >= 2)) {
+        provedMultiToken = true;
+        break;
+      }
+    }
+
+    // the whole point of ADR-014: at least one real arb aggregates >1 priced
+    // token, which the single-token detector's profit figure would miss
+    expect(provedMultiToken, "expected a >1-priced-token arbitrage in a recent block").toBe(true);
   });
 
   test("fill worker exposes its coverage status (X10)", async ({ request }) => {
@@ -449,6 +510,14 @@ test.describe("explorer-web", () => {
     await expect(legend.locator(".tl-legend-item")).toHaveCount(3);
     await expect(legend.locator(".tl-legend-unit")).toContainText(/value extracted/i);
 
+    // the graph reuses the Wiki's MEV-type color code: arbitrage = green,
+    // sandwich = yellow, liquidation = blue (via CSS vars on the swatches)
+    const swatchVar = (i: number) =>
+      legend.locator(".tl-legend-item").nth(i).locator(".legend-swatch").getAttribute("style");
+    expect(await swatchVar(0)).toContain("var(--green");
+    expect(await swatchVar(1)).toContain("var(--yellow");
+    expect(await swatchVar(2)).toContain("var(--blue");
+
     // amend: the peak moved from the legend to the y-axis; unit and value agree
     await expect(legend).not.toContainText(/peak/i);
     await expect(page.locator("#timelineYAxis")).toContainText(/Ξ|EUR/, { timeout: 15_000 });
@@ -494,5 +563,97 @@ test.describe("explorer-web", () => {
     await expect(traceBtn).toBeVisible();
     await traceBtn.hover();
     await expect(page.locator("#result tr.incident-hi").first()).toBeVisible();
+  });
+
+  // ADR-014: the expanded arbitrage detail shows the aggregate all-token value,
+  // the per-token delta table, and a pricing-method provenance badge.
+  test("arbitrage detail shows aggregate value + per-token deltas with method badges (ADR-014)", async ({
+    page,
+  }) => {
+    const block = anyMultiTokenArbitrageBlock() ?? anyArbitrageBlock();
+    test.skip(block === null, "no arbitrages in the shared postgres");
+
+    const blockResponse = page.waitForResponse(
+      (res) => res.url().includes(`/api/block/${block}`) && res.ok(),
+    );
+    await page.goto(`${EXPLORER_WEB}/?block=${block}`);
+    await blockResponse;
+
+    // find the (collapsed) detail row carrying an arbitrage, then expand its tx
+    const arbDetail = page.locator("tr.detail-row:has(.detail-block .badge.arbitrage)").first();
+    await expect(arbDetail).toHaveCount(1);
+    const txHash = await arbDetail.getAttribute("data-detail-for");
+    await page.locator(`#result tr[data-tx="${txHash}"]`).click();
+
+    const detail = page
+      .locator(`tr[data-detail-for="${txHash}"] .detail-block:has(.badge.arbitrage)`)
+      .first();
+    await expect(detail).toContainText("Aggregate value (all tokens)");
+    // the aggregate is rendered in the ETH unit by default (Ξ) or EUR
+    await expect(detail).toContainText(/Ξ|€|EUR/);
+    // the per-token delta table with at least one row and a provenance badge
+    await expect(detail.locator(".arb-breakdown .arb-delta-row").first()).toBeVisible();
+    const badge = detail.locator(".price-method").first();
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveText(/onchain|feed|unpriced/);
+  });
+
+  // ADR-014 / task G: the Wiki tab documents how the arbitrage value is priced,
+  // with a badge per pricing method.
+  test("wiki tab explains arbitrage pricing with the three method badges (ADR-014)", async ({
+    page,
+  }) => {
+    const block = latestInspectedBlock();
+    test.skip(block === null, "no inspected blocks in the shared postgres");
+
+    await page.goto(`${EXPLORER_WEB}/?block=${block}`);
+    await page.locator(".explore-tab[data-tab=wiki]").click();
+    const legend = page.locator("#legend");
+    await expect(legend).toContainText("How arbitrage value is priced");
+    await expect(legend.locator(".price-method-onchain")).toContainText("onchain");
+    await expect(legend.locator(".price-method-feed")).toContainText("feed");
+    await expect(legend.locator(".price-method-unpriced")).toContainText("unpriced");
+  });
+
+  // EUR/ETH toggle value-flow: swaps stay token→token (never priced both legs in
+  // €), and every €-converted figure carries a `feed` provenance label.
+  test("EUR mode keeps swaps token-denominated and labels feed-derived figures", async ({
+    page,
+  }) => {
+    const hit = anySandwichFrontrunWithSwap();
+    test.skip(hit === null, "no sandwich front-run with a decoded swap in the shared postgres");
+    const { block, txHash } = hit!;
+
+    const priceResponse = page.waitForResponse(
+      (res) => res.url().includes("/api/eur-prices") && res.ok(),
+    );
+    await page.goto(`${EXPLORER_WEB}/?block=${block}`);
+    await page.waitForResponse((res) => res.url().includes(`/api/block/${block}`) && res.ok());
+    await priceResponse;
+
+    // switch to EUR and expand the front-run leg
+    await page.locator("#eurToggle").click();
+    await expect(page.locator("#eurToggle")).toHaveText("€");
+    await page.locator(`#result tr[data-tx="${txHash}"]`).click();
+    const detail = page.locator(`tr[data-detail-for="${txHash}"]`).first();
+
+    // the swap chip shows token SYMBOLS (letters), not two bare € figures, and a
+    // single feed-labeled € notional rather than a per-leg re-pricing
+    const chip = detail.locator(".swap-chip").first();
+    await expect(chip).toBeVisible();
+    await expect(chip).toContainText(/[A-Za-z]{2,}/); // a token symbol, e.g. WETH/USDT
+    const notional = chip.locator(".swap-notional");
+    if ((await notional.count()) > 0) {
+      await expect(notional.first()).toHaveText(/≈ .* €/);
+    }
+
+    // the invariant: a figure shown in € must be tagged `feed`. The Profit row is
+    // €-converted only when its token is priceable — when it is, the tag must be
+    // there; when the token is unpriceable it stays in token units (nothing to
+    // label). Either way, no bare unlabeled € figure.
+    const profitRow = detail.locator(".kv-row").filter({ hasText: "Profit" }).first();
+    if ((await profitRow.count()) > 0 && (await profitRow.innerText()).includes("€")) {
+      await expect(profitRow.locator(".price-method-feed")).toHaveText("feed");
+    }
   });
 });

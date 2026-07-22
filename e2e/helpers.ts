@@ -40,6 +40,33 @@ export function anyArbitrageBlock(): number | null {
   return out ? Number(out) : null;
 }
 
+/**
+ * A block with an arbitrage whose route nets a non-zero delta in >= 2 distinct
+ * tokens — the ADR-014 multi-token case the single-token detector under-counts.
+ * (A token may still be value-dust-dropped at valuation time, so the rendered
+ * breakdown can be shorter; this only guarantees the raw multi-token shape.)
+ */
+export function multiTokenArbitrageBlocks(limit = 25): number[] {
+  const out = psql(
+    `WITH d AS (SELECT a.id, a.block_number, tok, SUM(amt) AS net
+     FROM arbitrages a
+     JOIN arbitrage_swaps asw ON asw.arbitrage_id = a.id
+     JOIN swaps s ON s.transaction_hash = asw.swap_transaction_hash AND s.trace_address = asw.swap_trace_address
+     CROSS JOIN LATERAL (VALUES (lower(s.token_out_address), s.token_out_amount::numeric),
+       (lower(s.token_in_address), -s.token_in_amount::numeric)) v(tok, amt)
+     WHERE a.error IS NULL GROUP BY a.id, a.block_number, tok)
+     SELECT DISTINCT block_number FROM (SELECT id, block_number,
+       count(*) FILTER (WHERE abs(net) > 0) AS n FROM d GROUP BY id, block_number) q
+     WHERE n >= 2 ORDER BY block_number DESC LIMIT ${limit}`,
+  );
+  return out ? out.split("\n").map(Number) : [];
+}
+
+/** The most recent block with a >= 2-token-delta arbitrage, or null. */
+export function anyMultiTokenArbitrageBlock(): number | null {
+  return multiTokenArbitrageBlocks(1)[0] ?? null;
+}
+
 /** An inspected arbitrage transaction that paid a non-zero builder tip
  * (coinbase transfer), so its incident economics are interesting, or null. */
 export function anyArbitrageTxWithTip(): string | null {
@@ -59,6 +86,21 @@ export function anySandwichFrontrunTxHash(): string | null {
   return psql(
     "SELECT frontrun_swap_transaction_hash FROM sandwiches ORDER BY block_number DESC LIMIT 1",
   );
+}
+
+/**
+ * A sandwich front-run leg that also carries a decoded swap, as `block:txHash`,
+ * or null — so a test can open the row and check the swap value-flow rendering.
+ */
+export function anySandwichFrontrunWithSwap(): { block: number; txHash: string } | null {
+  const out = psql(
+    `SELECT s.block_number || ':' || s.frontrun_swap_transaction_hash
+     FROM sandwiches s JOIN swaps sw ON sw.transaction_hash = s.frontrun_swap_transaction_hash
+     ORDER BY s.block_number DESC LIMIT 1`,
+  );
+  if (!out) return null;
+  const [block, txHash] = out.split(":");
+  return { block: Number(block), txHash };
 }
 
 /**
