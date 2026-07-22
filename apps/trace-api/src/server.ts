@@ -1,4 +1,5 @@
 import { loadConfig } from "@mev/config";
+import { ensureEvidenceTables } from "@mev/db";
 import { getProvider } from "@mev/rpc";
 import { isTxHash, normalizeAddress } from "@mev/trace-graph";
 import express from "express";
@@ -176,6 +177,16 @@ app.get("/api/contracts/:address/meta", async (req, res) => {
   }
 });
 
-app.listen(config.TRACE_API_PORT, () => {
-  console.log(`trace-api listening on http://localhost:${config.TRACE_API_PORT}`);
-});
+// Every service boot path runs the shared migrator (ADR-016 §1): trace-api owns
+// the evidence gateway, so its schema must exist before it serves catalog,
+// contract-evidence, or discovery-import requests.
+ensureEvidenceTables()
+  .then(() => {
+    app.listen(config.TRACE_API_PORT, () => {
+      console.log(`trace-api listening on http://localhost:${config.TRACE_API_PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("trace-api failed to ensure evidence tables:", err);
+    process.exit(1);
+  });

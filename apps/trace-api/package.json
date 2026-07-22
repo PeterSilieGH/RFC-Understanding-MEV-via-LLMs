@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@mev/config": "workspace:*",
+    "@mev/db": "workspace:*",
     "@mev/decompiler-api": "workspace:*",
     "@mev/evidence": "workspace:*",
     "@mev/flat-store": "workspace:*",

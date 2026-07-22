@@ -244,6 +244,9 @@ importers:
       '@mev/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@mev/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@mev/decompiler-api':
         specifier: workspace:*
         version: link:../decompiler-api

@@ -22,6 +22,15 @@ const responseSchema = z
   .object({
     candidateId: z.string().regex(/^[0-9a-f]{24,64}$/),
     artifactRef: z.string().min(1).max(500),
+    // Deployment/proxy metadata the gateway attaches; accepted (and currently
+    // unused by the reusable code bundle) so strict validation does not reject
+    // a well-formed artifact.
+    deploymentArtifactRef: z.string().min(1).max(500).optional(),
+    proxyType: z.string().max(200).nullable().optional(),
+    implementationAddresses: z
+      .array(z.string().regex(/^0x[0-9a-f]{40}$/))
+      .max(64)
+      .optional(),
     address: z.string().regex(/^0x[0-9a-f]{40}$/),
     name: z.string().max(500).nullable(),
     runtimeCodehash: z.string().regex(/^0x[0-9a-f]{64}$/),
@@ -77,7 +86,9 @@ export async function resolveAnalysisEvidence(
     throw new Error("contract evidence response exceeded 4 MiB");
   }
   if (!response.ok) {
-    throw new Error(`contract evidence resolution failed (${response.status}): ${body.slice(0, 500)}`);
+    throw new Error(
+      `contract evidence resolution failed (${response.status}): ${body.slice(0, 500)}`,
+    );
   }
   let raw: unknown;
   try {
@@ -87,7 +98,9 @@ export async function resolveAnalysisEvidence(
   }
   const parsed = responseSchema.safeParse(raw);
   if (!parsed.success) {
-    throw new Error(`contract evidence gateway returned an invalid artifact: ${parsed.error.message}`);
+    throw new Error(
+      `contract evidence gateway returned an invalid artifact: ${parsed.error.message}`,
+    );
   }
   if (parsed.data.candidateId !== candidateId) {
     throw new Error("contract evidence gateway returned a different candidate");
