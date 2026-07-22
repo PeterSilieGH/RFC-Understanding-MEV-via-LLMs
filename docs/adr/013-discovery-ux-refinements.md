@@ -13,6 +13,11 @@ an endpoint the explorer already serves.
 Discovery verdict base as secondary; the read-only `cast` tool is **in scope**
 for implementation, not deferred to a prompt-only hint (§8).
 
+**Amended 2026-07-22:** the conversation output fills the remaining Discovery
+pane instead of using a hard-coded height, and Enter-submit renders the user's
+question plus a registered status before context loading or streaming begins
+(§4, §6).
+
 ## Context
 
 ADR-012 landed the autonomous Discovery surfaces: one shared preparation pass
@@ -93,7 +98,10 @@ tab) for a consistent collapse affordance.
 The follow-up **[Ask]** button is removed. The textarea submits the trimmed
 question on **Enter**; **Shift+Enter** inserts a newline. Submit is suppressed
 while a run is in flight or the input is empty (the prior `disabled` guards move
-onto the keydown handler). Placeholder text advertises the gesture.
+onto the keydown handler). Placeholder text advertises the gesture. A valid
+submit is appended optimistically to the conversation with a live **Follow-up
+registered** status before incident context collection or the agent request can
+delay visible feedback.
 
 ### 5. Bundle set is fully visible — never inner-scrolled
 
@@ -102,7 +110,7 @@ without an inner scrollbar**. The pane's own scroll region (and, with §2, the
 Discovery panel owning the whole leaf) absorbs overflow. The selection set — the
 context/cost lever — is always seen at a glance.
 
-### 6. Stream reasoning; render verdict in a fixed, scrollable window
+### 6. Stream reasoning; render verdict in a pane-filling scrollable window
 
 - The pi harness emits `thinking_start` / `thinking_delta` / `thinking_end`
   around model reasoning. `runner.ts` subscribes to `thinking_delta` and emits a
@@ -111,8 +119,9 @@ context/cost lever — is always seen at a glance.
   Discovery runs request a non-zero **thinking level** where the model supports
   it (clamped to model capability by the harness).
 - The Discovery pane renders the **reasoning** (dim, collapsible) and the
-  **verdict/turns** inside a **fixed-height, scrollable** output region, so a
-  long verdict scrolls in place instead of growing the pane. Reasoning is
+  **verdict/turns** inside a **flexible, scrollable** output region that consumes
+  all space left in the docked pane, so a long verdict scrolls in place instead
+  of growing the pane. Reasoning is
   **display-only** — it is not persisted into durable session turns (which stay
   verdict-only, ADR-012 §1) and not fed back as context.
 

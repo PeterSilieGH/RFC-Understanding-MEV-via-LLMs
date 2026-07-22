@@ -11,7 +11,7 @@ export function DiscoveryPanel() {
     throw new Error('Cannot use component outside of project page!')
   }
   return (
-    <div className="h-full w-full overflow-auto">
+    <div className="h-full min-h-0 w-full overflow-auto">
       <DiscoveryPanes project={project} />
     </div>
   )

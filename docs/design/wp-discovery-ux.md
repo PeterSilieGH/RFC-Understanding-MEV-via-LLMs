@@ -93,7 +93,9 @@ In `DiscoveryKind`'s follow-up textarea: delete the `<Button>Ask</Button>`; add
 `onKeyDown` — on **Enter without Shift**, `preventDefault()` and submit the
 trimmed question (reuse the existing guard: no-op if `running` or empty),
 clearing the input; **Shift+Enter** falls through to a newline. Update the
-placeholder to mention "Enter to send · Shift+Enter for newline".
+placeholder to mention "Enter to send · Shift+Enter for newline". Optimistically
+append the question with an aria-live **Follow-up registered** status before
+context loading or stream startup.
 
 ### U5 — Bundles fully visible, never inner-scrolled (XS) — ADR-013 §5
 
@@ -104,7 +106,7 @@ In `DiscoveryKind`, remove `max-h-32 overflow-auto` from the bundle-list
 container so every bundle button renders in the pane flow. Overflow is absorbed
 by the Discovery panel's own scroll (post-U2 the panel owns the whole leaf).
 
-### U6 — Stream reasoning + fixed scrollable output (M) — ADR-013 §6
+### U6 — Stream reasoning + pane-filling scrollable output (M) — ADR-013 §6
 
 > "add reasoning to the Discovery Agent and make the output a fixed sized
 > scrollable window."
@@ -124,9 +126,9 @@ by the Discovery panel's own scroll (post-U2 the panel owns the whole leaf).
 **Frontend (`DiscoveryPanes.tsx`):**
 - Accumulate `reasoning` into separate state from `live` (verdict). Render
   reasoning **dim + collapsible** above the verdict.
-- Wrap reasoning + verdict/turns in a **fixed-height, scrollable** container
-  (e.g. `h-64 overflow-auto` — pick a height that fits the docked pane) so long
-  verdicts scroll in place. Reasoning is **display-only**: not persisted into
+- Wrap reasoning + verdict/turns in a **min-h-0 flex-1, scrollable** container so
+  it consumes the remainder of the docked pane and long verdicts scroll in
+  place. Reasoning is **display-only**: not persisted into
   `stored.turns`, not sent back on follow-ups (ADR-013 §6).
 
 ### U7 — Gas fees & builder tip into the baseline (bundle-prep) prompt (M) — ADR-013 §7
@@ -199,6 +201,66 @@ at `/usr/bin/cast`; `RPC_URL` and `ETHERSCAN_API_KEY` come from `@mev/config`.
   and a per-call timeout; latency (each call is a provider round-trip — ADR-012
   latency note applies); keep provenance on cited results.
 
+### U9 — Navigation-stable, compact bundle preparation (L) — ADR-014 §1–3
+
+- Move preparation ownership from the mounted Discovery pane to a module-level,
+  project/model/kind/effort-keyed job registry. Workspace navigation only
+  unsubscribes the pane; it must not abort the request.
+- Send compact contract identities from the browser. agent-api resolves runtime
+  codehashes, checks the durable cache in bulk, deduplicates deployments by
+  codehash, and hydrates source only for cache misses with bounded concurrency.
+- Stream resolved/cached/analyzing/completed progress. Keep nginx and Express
+  request-size limits unchanged.
+
+### U10 — Durable unverified-contract fallback (S) — ADR-014 §6
+
+- Inspect Discovery project metadata before requesting flattened source. When a
+  contract is explicitly `type: "Unverified"`, do not call the source endpoint
+  and do not schedule a model run that requires verified source.
+- Persist one deterministic bundle per requested research kind, keyed by the
+  runtime codehash. It identifies the contract as opaque, contains no invented
+  entry points, and tells Discover to use trace/on-chain evidence for claims.
+- Unit-test that unverified metadata bypasses `/code/`, and live-test that a
+  second preparation is a cache hit without a warning.
+
+### U11 — Discover input state and authoritative context usage (M) — ADR-014 §7–8
+
+- Rename the initial/rebuild action to **Discover**. After a successful Discover
+  interaction, hide the included-bundle selection and show **Reassess**.
+  Reassess reopens selection without starting a model turn; its button becomes
+  Discover again. A failed run restores selection for correction/retry.
+- After `session.prompt()` completes, read pi's `getContextUsage()` and emit a
+  usage NDJSON event. Persist its token count and context window on the durable
+  Discovery session. The UI uses the preflight estimate until authoritative
+  usage exists, then updates after every verdict and follow-up, including model
+  reasoning/tool traffic.
+- Extend `e2e/disco.spec.ts` against the rebuilt compose stack to verify the
+  Discover → hidden bundles/Reassess → visible bundles/Discover transition and
+  that context usage changes after a follow-up. Do not use a throwaway script.
+
+### U12 — Analyze cast parity and GUI verification (S) — ADR-014 §9
+
+- Enable the bounded read-only `cast` tool on `/api/agent/analyze`, covering
+  both code and value analysis. Extend both task prompts so the model knows to
+  use cast only when on-chain facts are needed and to cite its results.
+- Keep the existing cast allowlist, `execFile` no-shell execution, timeout, and
+  output cap unchanged.
+- Add a Playwright browser test against the rebuilt stack that calls the real
+  Analyze NDJSON stream through the disco-web nginx origin, asks for a concrete
+  read-only cast query, and observes both a successful `cast <subcommand>` tool
+  event and a completed report. The docked Analyze panel was removed by
+  ADR-012, so do not restore it solely for this verification.
+
+### U13 — Pane-filling conversation and optimistic Enter feedback (S) — ADR-013 §4, §6
+
+- Replace the hard-coded Discovery conversation height with a `flex-1` region
+  that consumes the available docking-pane height and scrolls internally.
+- On Enter-submit, immediately render the submitted question and an aria-live
+  **Follow-up registered** state before trace/economics context collection or
+  the NDJSON response begins. Restore the question if the request fails.
+- Extend the Playwright Discovery flow with a deliberately delayed follow-up
+  response and observe the registered state before releasing that response.
+
 ## Sequencing & risk
 
 - **Land order:** U1 → U5 → U4 (trivial, independent) → U2 (docking) → U3
@@ -216,6 +278,9 @@ at `/usr/bin/cast`; `RPC_URL` and `ETHERSCAN_API_KEY` come from `@mev/config`.
   newlines; all bundles visible; reasoning streams into a fixed scroll box; the
   verdict references gas/tip; and a `cast` read query is cited (and a `send` is
   refused).
+- **ADR-014 verification:** rebuild/restart `agent-api` and `disco-web`; run the
+  package builds/tests, the agent API regression suite, the Playwright Discovery
+  specs, and a live NDJSON replay for the known unverified trace contract.
 
 ## Out of scope
 

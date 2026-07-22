@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import { formatSignatureList, parseFunctionSignatures } from "./signatures.js";
 import type { ContractBundle, ResearchKind } from "./store.js";
 
-export interface BundleContractInput {
+export interface BundleContractRef {
   address: string;
   name?: string;
   codehash?: string;
+}
+
+export interface BundleContractInput extends BundleContractRef {
   codeContext: string;
   valueContext?: string;
 }
@@ -16,6 +19,20 @@ export interface GeneratedBundle {
   entryPoints: string[];
   flowSummary: string;
   notes: string;
+}
+
+export function opaqueUnverifiedBundle(kind: ResearchKind): GeneratedBundle {
+  return {
+    kind,
+    role: "Unverified runtime contract",
+    entryPoints: [],
+    flowSummary:
+      "Runtime bytecode participates in the incident, but Discovery has no verified source or decoded ABI. Treat the contract as opaque and derive behavior only from observed calls, value flow, and read-only on-chain evidence.",
+    notes:
+      kind === "mev"
+        ? "MEV relevance is unresolved at contract-analysis time. The incident-level Discover pass must use trace ordering and value-flow evidence rather than infer behavior from unavailable source."
+        : "The vulnerability surface is unresolved at contract-analysis time. Absence of verified source is an evidence limitation, not evidence of safety or a vulnerability.",
+  };
 }
 
 export function contractCodehash(contract: BundleContractInput): string {

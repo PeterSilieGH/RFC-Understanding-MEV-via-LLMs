@@ -65,7 +65,7 @@ It needs an external RPC node with `trace_block` support (reth/Erigon — plain 
 ## Version control
 
 - **Big work packages go on a dedicated feature branch and land via a merge request** — do not commit large efforts straight onto a long-lived branch. Record the decision as an ADR in `docs/adr/` plus a work-package doc in `docs/design/` *before* implementing, and verify (above) before opening the MR.
-- Commit and push **only when asked**. End commit messages with the `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` trailer.
+- **After all required verification passes, commit the scoped changes on the feature branch, push that branch, and open a merge request targeting `main`.** Do not commit or open the MR while required checks are failing; report any blocker instead.
 - **Never commit submodule state** (`l2beat`) or the pi agent dir, and never commit UI-created `trace-*` discovery projects or other untracked submodule files (they may hold local `.env`s).
 
 ## Architecture Essentials

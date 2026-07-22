@@ -29,7 +29,8 @@ export function VerdictSection(props: { project: string }) {
   const [queued, setQueued] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const model = useAgentModelStore((s) => s.incidentModel)
+  const model = useAgentModelStore((s) => s.discoverModel)
+  const effort = useAgentModelStore((s) => s.discoverEffort)
   const setImportant = useAgentMarksStore((s) => s.setImportant)
 
   const stored = useQuery({
@@ -60,7 +61,7 @@ export function VerdictSection(props: { project: string }) {
 
     try {
       const stream = streamVerdict(
-        { project, model, traceTree, swaps, analyzed },
+        { project, model, effort, traceTree, swaps, analyzed },
         controller.signal,
       )
       for await (const event of stream) {
@@ -95,7 +96,7 @@ export function VerdictSection(props: { project: string }) {
           break
       }
     }
-  }, [project, running, stored, model, txHash, setImportant])
+  }, [project, running, stored, model, effort, txHash, setImportant])
 
   const verdict = stored.data
   const showLive = running || (live && !verdict)
@@ -155,7 +156,12 @@ export function VerdictSection(props: { project: string }) {
       )}
 
       {verdict && !showLive && (
-        <VerdictChat project={project} txHash={txHash} model={model} />
+        <VerdictChat
+          project={project}
+          txHash={txHash}
+          model={model}
+          effort={effort}
+        />
       )}
     </div>
   )

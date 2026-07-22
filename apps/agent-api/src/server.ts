@@ -6,21 +6,24 @@ import { ethers } from "ethers";
 import express from "express";
 import {
   type BundleContractInput,
+  type BundleContractRef,
   buildBundlePrompt,
   bundleText,
   contractCodehash,
   estimateTokens,
+  opaqueUnverifiedBundle,
   parseGeneratedBundles,
 } from "./bundles.js";
+import { DiscoveryContractLoader, UnverifiedContractError } from "./discoveryContracts.js";
 import { listModels } from "./models.js";
-import { type RunEvent, runAnalysis } from "./runner.js";
+import { type RunEvent, type ThinkingLevel, runAnalysis } from "./runner.js";
 import { formatSignatureList, parseFunctionSignatures } from "./signatures.js";
 import { SKILLS } from "./skills.js";
 import {
   type ContractBundle,
   type ResearchKind,
   type SessionTurn,
-  addBundleAddress,
+  addBundleAddresses,
   getBundles,
   getSession,
   latestVerdict,
@@ -65,20 +68,17 @@ function pickKinds(value: unknown): ResearchKind[] {
   ];
 }
 
-function pickContracts(value: unknown): BundleContractInput[] {
+function pickContracts(value: unknown): BundleContractRef[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     if (typeof item !== "object" || item === null) return [];
     const c = item as Record<string, unknown>;
-    if (typeof c.address !== "string" || typeof c.codeContext !== "string" || !c.codeContext.trim())
-      return [];
+    if (typeof c.address !== "string") return [];
     return [
       {
         address: c.address,
         name: typeof c.name === "string" ? c.name : undefined,
         codehash: typeof c.codehash === "string" ? c.codehash : undefined,
-        codeContext: c.codeContext,
-        valueContext: typeof c.valueContext === "string" ? c.valueContext : undefined,
       },
     ];
   });
@@ -94,11 +94,13 @@ async function generateContractBundles(input: {
   missing: ResearchKind[];
   targetBundleTokens: number;
   gas?: string;
+  effort?: ThinkingLevel;
   model: ModelRef;
   emit: (event: RunEvent) => void;
   signal: AbortSignal;
 }): Promise<void> {
-  const { project, identity, missing, targetBundleTokens, gas, model, emit, signal } = input;
+  const { project, identity, missing, targetBundleTokens, gas, effort, model, emit, signal } =
+    input;
   let report = "";
   let analysisError: string | undefined;
   await runAnalysis(
@@ -111,6 +113,7 @@ async function generateContractBundles(input: {
         `Kinds: ${missing.join(", ")}`,
       ],
       enableCast: true,
+      thinkingLevel: effort,
       model,
     },
     (event) => {
@@ -158,6 +161,7 @@ async function ensureContractBundles(input: {
   kinds: ResearchKind[];
   targetBundleTokens: number;
   gas?: string;
+  effort?: ThinkingLevel;
   model: ModelRef;
   emit: (event: RunEvent) => void;
   signal: AbortSignal;
@@ -196,16 +200,16 @@ app.post("/api/agent/bundles/prepare", async (req, res) => {
     kinds?: unknown;
     contracts?: unknown;
     gas?: string;
+    effort?: unknown;
     model?: unknown;
   };
   const project = body.project?.trim();
   const kinds = pickKinds(body.kinds);
   const contracts = pickContracts(body.contracts);
   const gas = typeof body.gas === "string" ? body.gas.trim() || undefined : undefined;
+  const effort = pickEffort(body.effort);
   if (!project || kinds.length === 0 || contracts.length === 0) {
-    res
-      .status(400)
-      .json({ error: "project, active kinds, and contracts with verified code are required" });
+    res.status(400).json({ error: "project, active kinds, and contract references are required" });
     return;
   }
   const signal = abortSignalFor(req, res);
@@ -219,48 +223,125 @@ app.post("/api/agent/bundles/prepare", async (req, res) => {
         (candidate) =>
           candidate.provider === selectedModel?.provider && candidate.id === selectedModel?.id,
       )?.contextWindow ?? 128_000;
-    const identities = await Promise.all(
-      contracts.map(async (contract) => ({
-        contract,
-        codehash: await resolveContractCodehash(contract),
-      })),
+    const loader = new DiscoveryContractLoader(
+      `http://localhost:${config.DISCO_API_PORT}`,
+      project,
     );
+    const resolved = (
+      await mapConcurrent(contracts, 16, async (contract) => {
+        try {
+          return await resolveContractIdentity(contract, loader);
+        } catch (err) {
+          writeNdjson(res, {
+            type: "warning",
+            address: contract.address,
+            message: (err as Error).message,
+          });
+          return undefined;
+        }
+      })
+    ).filter((identity): identity is ResolvedBundleIdentity => identity !== undefined);
+    const identities = deduplicateIdentities(resolved);
+    const cachedBundles = await getBundles(
+      identities.map((identity) => identity.codehash),
+      kinds,
+    );
+    const cachedByCodehash = new Map<string, ContractBundle[]>();
+    for (const bundle of cachedBundles) {
+      const values = cachedByCodehash.get(bundle.codehash) ?? [];
+      values.push(bundle);
+      cachedByCodehash.set(bundle.codehash, values);
+    }
+    writeNdjson(res, {
+      type: "progress",
+      phase: "resolved",
+      completed: 0,
+      total: identities.length,
+    });
     // Reserve prompt/verdict room, then divide the reusable-context allowance
     // across every candidate kind. This is the pre-aggregation size probe that
     // nudges generation tighter for small-window models or large incidents.
     const targetBundleTokens = Math.max(
       160,
-      Math.min(700, Math.floor((contextWindow * 0.65) / (identities.length * kinds.length))),
+      Math.min(
+        700,
+        Math.floor((contextWindow * 0.65) / (Math.max(1, identities.length) * kinds.length)),
+      ),
     );
-    await Promise.all(
-      identities.map(async (identity) => {
-        try {
-          const bundles = await ensureContractBundles({
-            project,
-            identity,
-            kinds,
-            targetBundleTokens,
-            gas,
-            model,
-            emit: (event) => writeNdjson(res, event),
-            signal,
-          });
-          for (let bundle of bundles) {
-            const address = normalizeAddresses([identity.contract.address])[0];
-            if (address && !bundle.addresses.includes(address)) {
-              bundle = (await addBundleAddress(bundle.codehash, bundle.kind, address)) ?? bundle;
+    let completed = 0;
+    await mapConcurrent(identities, config.AGENT_MAX_CONCURRENCY, async (identity) => {
+      try {
+        // Check durable rows before loading flattened source. One source load
+        // and one model run serve every deployment sharing this codehash.
+        const existing = cachedByCodehash.get(identity.codehash) ?? [];
+        const missing = kinds.filter((kind) => !existing.some((bundle) => bundle.kind === kind));
+        writeNdjson(res, {
+          type: "progress",
+          phase: missing.length === 0 ? "cached" : "analyzing",
+          completed,
+          total: identities.length,
+          address: identity.refs[0].address,
+        });
+        let bundles = existing;
+        if (missing.length > 0) {
+          try {
+            const contract = identity.contract ?? (await loadFirstAvailable(loader, identity.refs));
+            bundles = await ensureContractBundles({
+              project,
+              identity: { codehash: identity.codehash, contract },
+              kinds,
+              targetBundleTokens,
+              gas,
+              effort,
+              model,
+              emit: (event) => writeNdjson(res, event),
+              signal,
+            });
+          } catch (err) {
+            if (!(err instanceof UnverifiedContractError)) throw err;
+            const addresses = normalizeAddresses(identity.refs.map((ref) => ref.address));
+            for (const kind of missing) {
+              const generated = opaqueUnverifiedBundle(kind);
+              const text = [generated.role, generated.flowSummary, generated.notes].join("\n");
+              await saveBundle({
+                codehash: identity.codehash,
+                kind,
+                addresses,
+                role: generated.role,
+                entryPoints: generated.entryPoints,
+                flowSummary: generated.flowSummary,
+                notes: generated.notes,
+                tokenEstimate: estimateTokens(text),
+                provenanceRunId: null,
+              });
             }
-            writeNdjson(res, { type: "bundle", bundle });
+            bundles = await getBundles([identity.codehash], kinds);
           }
-        } catch (err) {
-          writeNdjson(res, {
-            type: "warning",
-            address: identity.contract.address,
-            message: (err as Error).message,
-          });
         }
-      }),
-    );
+        for (let bundle of bundles) {
+          const addresses = normalizeAddresses(identity.refs.map((ref) => ref.address));
+          if (addresses.some((address) => !bundle.addresses.includes(address))) {
+            bundle = (await addBundleAddresses(bundle.codehash, bundle.kind, addresses)) ?? bundle;
+          }
+          writeNdjson(res, { type: "bundle", bundle });
+        }
+      } catch (err) {
+        writeNdjson(res, {
+          type: "warning",
+          address: identity.refs[0].address,
+          message: (err as Error).message,
+        });
+      } finally {
+        completed++;
+        writeNdjson(res, {
+          type: "progress",
+          phase: "completed",
+          completed,
+          total: identities.length,
+          address: identity.refs[0].address,
+        });
+      }
+    });
     writeNdjson(res, { type: "prepared" });
   } catch (err) {
     writeNdjson(res, { type: "error", message: (err as Error).message });
@@ -269,21 +350,94 @@ app.post("/api/agent/bundles/prepare", async (req, res) => {
   }
 });
 
-async function resolveContractCodehash(contract: BundleContractInput): Promise<string> {
+interface ResolvedBundleIdentity {
+  ref: BundleContractRef;
+  codehash: string;
+  contract?: BundleContractInput;
+}
+
+interface DeduplicatedBundleIdentity {
+  refs: BundleContractRef[];
+  codehash: string;
+  contract?: BundleContractInput;
+}
+
+async function resolveContractIdentity(
+  contract: BundleContractRef,
+  loader: DiscoveryContractLoader,
+): Promise<ResolvedBundleIdentity> {
   if (contract.codehash && /^0x[0-9a-f]{64}$/i.test(contract.codehash)) {
-    return contract.codehash.toLowerCase();
+    return { ref: contract, codehash: contract.codehash.toLowerCase() };
   }
   const address = normalizeAddresses([contract.address])[0];
   if (address) {
     try {
       const runtimeCode = await getProvider().getCode(address);
-      if (runtimeCode !== "0x") return ethers.keccak256(runtimeCode);
+      if (runtimeCode !== "0x") {
+        return { ref: contract, codehash: ethers.keccak256(runtimeCode) };
+      }
     } catch {
-      // Discovery can still operate while the RPC is temporarily unavailable;
-      // the canonical verified-source identity is deterministic and grounded.
+      // Fall through to a deterministic source identity. This is the only path
+      // that loads source before the durable bundle lookup.
     }
   }
-  return contractCodehash(contract);
+  const hydrated = await loader.load(contract);
+  return { ref: contract, codehash: contractCodehash(hydrated), contract: hydrated };
+}
+
+function deduplicateIdentities(values: ResolvedBundleIdentity[]): DeduplicatedBundleIdentity[] {
+  const byCodehash = new Map<string, DeduplicatedBundleIdentity>();
+  for (const value of values) {
+    const existing = byCodehash.get(value.codehash);
+    if (existing) {
+      existing.refs.push(value.ref);
+      existing.contract ??= value.contract;
+    } else {
+      byCodehash.set(value.codehash, {
+        refs: [value.ref],
+        codehash: value.codehash,
+        contract: value.contract,
+      });
+    }
+  }
+  return [...byCodehash.values()];
+}
+
+async function loadFirstAvailable(
+  loader: DiscoveryContractLoader,
+  refs: BundleContractRef[],
+): Promise<BundleContractInput> {
+  let lastError: unknown;
+  let unverified: UnverifiedContractError | undefined;
+  for (const ref of refs) {
+    try {
+      return await loader.load(ref);
+    } catch (err) {
+      lastError = err;
+      if (err instanceof UnverifiedContractError) unverified = err;
+    }
+  }
+  if (unverified) throw unverified;
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("no verified contract source is available");
+}
+
+async function mapConcurrent<T, R>(
+  values: readonly T[],
+  limit: number,
+  fn: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (next < values.length) {
+      const index = next++;
+      results[index] = await fn(values[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 app.post("/api/agent/bundles", async (req, res) => {
@@ -306,6 +460,7 @@ app.post("/api/agent/values/enrich", async (req, res) => {
     template?: string;
     codeContext?: string;
     valueContext?: string;
+    effort?: unknown;
     model?: unknown;
   };
   const project = body.project?.trim();
@@ -337,6 +492,7 @@ app.post("/api/agent/values/enrich", async (req, res) => {
         prompt,
         entries: parseFunctionSignatures(body.codeContext),
         transcriptHeader: ["Skill: value-config-enrichment", `Target: ${address}`],
+        thinkingLevel: pickEffort(body.effort),
         model: pickModel(body.model),
       },
       (event) => {
@@ -422,6 +578,7 @@ app.post("/api/agent/discovery", async (req, res) => {
     traceTree?: string;
     swaps?: string;
     gas?: string;
+    effort?: unknown;
     model?: unknown;
     reset?: boolean;
   };
@@ -441,6 +598,7 @@ app.post("/api/agent/discovery", async (req, res) => {
     return;
   }
   const model = pickModel(body.model);
+  const effort = pickEffort(body.effort) ?? "low";
   const base = discoveryBase(
     kind,
     bundles,
@@ -496,9 +654,11 @@ app.post("/api/agent/discovery", async (req, res) => {
     fingerprint,
     model?.provider ?? "default",
     model?.id ?? "default",
+    effort,
   ].join(":");
   startNdjson(res);
   let report = "";
+  let contextUsage: Extract<RunEvent, { type: "usage" }> | undefined;
   try {
     await runAnalysis(
       {
@@ -509,11 +669,12 @@ app.post("/api/agent/discovery", async (req, res) => {
         model,
         systemPromptSuffix: DISCOVERY_PROMPTS[kind],
         // ADR-013 §6/§8: stream reasoning and offer the read-only cast tool.
-        thinkingLevel: "low",
+        thinkingLevel: effort,
         enableCast: true,
       },
       (event) => {
         if (event.type === "done") report = event.report;
+        else if (event.type === "usage") contextUsage = event;
         writeNdjson(res, event);
       },
       abortSignalFor(req, res),
@@ -526,6 +687,8 @@ app.post("/api/agent/discovery", async (req, res) => {
         bundleFingerprint: fingerprint,
         modelProvider: model?.provider ?? null,
         modelId: model?.id ?? null,
+        contextTokens: contextUsage?.tokens ?? previous?.contextTokens ?? null,
+        contextWindow: contextUsage?.contextWindow ?? previous?.contextWindow ?? contextWindow,
         turns: compactSessionTurns([
           ...turns,
           { role: "user", text: question },
@@ -598,6 +761,7 @@ interface AnalyzeBody {
   valueContext?: string;
   /** model override from the top-bar picker; omit for the settings default */
   model?: { provider: string; id: string };
+  effort?: unknown;
 }
 
 /** Accept a model override only when both fields are present strings. */
@@ -606,6 +770,17 @@ function pickModel(model: unknown): { provider: string; id: string } | undefined
   const { provider, id } = model as Record<string, unknown>;
   if (typeof provider === "string" && typeof id === "string") return { provider, id };
   return undefined;
+}
+
+function pickEffort(value: unknown): ThinkingLevel | undefined {
+  return value === "off" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh"
+    ? value
+    : undefined;
 }
 
 // NDJSON stream: one JSON RunEvent per line. fetch-readable (not EventSource:
@@ -666,7 +841,9 @@ app.post("/api/agent/analyze", async (req, res) => {
         prompt,
         entries: entries.length > 0 ? entries : undefined,
         transcriptHeader,
+        thinkingLevel: pickEffort(body.effort),
         model: pickModel(body.model),
+        enableCast: true,
       },
       emit,
       abortSignalFor(req, res),
@@ -695,6 +872,7 @@ app.post("/api/agent/verdict", async (req, res) => {
   const body = req.body as {
     project?: string;
     model?: unknown;
+    effort?: unknown;
     /** compact call-tree (signatures + links) for the incident's legs */
     traceTree?: string;
     /** decoded swaps per leg (protocol, pool, token amounts in/out) */
@@ -777,6 +955,7 @@ app.post("/api/agent/verdict", async (req, res) => {
           swaps ? "Swaps: provided" : "Swaps: none",
         ],
         model: pickModel(body.model),
+        thinkingLevel: pickEffort(body.effort),
         collectImportant: true,
       },
       emit,
@@ -810,6 +989,7 @@ app.post("/api/agent/verdict/chat", async (req, res) => {
   const body = req.body as {
     project?: string;
     model?: unknown;
+    effort?: unknown;
     question?: string;
     history?: { role?: string; text?: string }[];
     traceTree?: string;
@@ -861,6 +1041,7 @@ app.post("/api/agent/verdict/chat", async (req, res) => {
       {
         prompt,
         transcriptHeader: ["Skill: verdict-chat"],
+        thinkingLevel: pickEffort(body.effort),
         model: pickModel(body.model),
       },
       (event) => writeNdjson(res, event),
