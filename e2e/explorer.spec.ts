@@ -6,6 +6,7 @@ import {
   anyArbitrageurAddress,
   anyMultiTokenArbitrageBlock,
   anySandwichBlock,
+  anySandwichFrontrunWithSwap,
   anySwapTxHash,
   latestInspectedBlock,
   multiTokenArbitrageBlocks,
@@ -509,6 +510,14 @@ test.describe("explorer-web", () => {
     await expect(legend.locator(".tl-legend-item")).toHaveCount(3);
     await expect(legend.locator(".tl-legend-unit")).toContainText(/value extracted/i);
 
+    // the graph reuses the Wiki's MEV-type color code: arbitrage = green,
+    // sandwich = yellow, liquidation = blue (via CSS vars on the swatches)
+    const swatchVar = (i: number) =>
+      legend.locator(".tl-legend-item").nth(i).locator(".legend-swatch").getAttribute("style");
+    expect(await swatchVar(0)).toContain("var(--green");
+    expect(await swatchVar(1)).toContain("var(--yellow");
+    expect(await swatchVar(2)).toContain("var(--blue");
+
     // amend: the peak moved from the legend to the y-axis; unit and value agree
     await expect(legend).not.toContainText(/peak/i);
     await expect(page.locator("#timelineYAxis")).toContainText(/Ξ|EUR/, { timeout: 15_000 });
@@ -604,5 +613,47 @@ test.describe("explorer-web", () => {
     await expect(legend.locator(".price-method-onchain")).toContainText("onchain");
     await expect(legend.locator(".price-method-feed")).toContainText("feed");
     await expect(legend.locator(".price-method-unpriced")).toContainText("unpriced");
+  });
+
+  // EUR/ETH toggle value-flow: swaps stay token→token (never priced both legs in
+  // €), and every €-converted figure carries a `feed` provenance label.
+  test("EUR mode keeps swaps token-denominated and labels feed-derived figures", async ({
+    page,
+  }) => {
+    const hit = anySandwichFrontrunWithSwap();
+    test.skip(hit === null, "no sandwich front-run with a decoded swap in the shared postgres");
+    const { block, txHash } = hit!;
+
+    const priceResponse = page.waitForResponse(
+      (res) => res.url().includes("/api/eur-prices") && res.ok(),
+    );
+    await page.goto(`${EXPLORER_WEB}/?block=${block}`);
+    await page.waitForResponse((res) => res.url().includes(`/api/block/${block}`) && res.ok());
+    await priceResponse;
+
+    // switch to EUR and expand the front-run leg
+    await page.locator("#eurToggle").click();
+    await expect(page.locator("#eurToggle")).toHaveText("€");
+    await page.locator(`#result tr[data-tx="${txHash}"]`).click();
+    const detail = page.locator(`tr[data-detail-for="${txHash}"]`).first();
+
+    // the swap chip shows token SYMBOLS (letters), not two bare € figures, and a
+    // single feed-labeled € notional rather than a per-leg re-pricing
+    const chip = detail.locator(".swap-chip").first();
+    await expect(chip).toBeVisible();
+    await expect(chip).toContainText(/[A-Za-z]{2,}/); // a token symbol, e.g. WETH/USDT
+    const notional = chip.locator(".swap-notional");
+    if ((await notional.count()) > 0) {
+      await expect(notional.first()).toHaveText(/≈ .* €/);
+    }
+
+    // the invariant: a figure shown in € must be tagged `feed`. The Profit row is
+    // €-converted only when its token is priceable — when it is, the tag must be
+    // there; when the token is unpriceable it stays in token units (nothing to
+    // label). Either way, no bare unlabeled € figure.
+    const profitRow = detail.locator(".kv-row").filter({ hasText: "Profit" }).first();
+    if ((await profitRow.count()) > 0 && (await profitRow.innerText()).includes("€")) {
+      await expect(profitRow.locator(".price-method-feed")).toHaveText("feed");
+    }
   });
 });

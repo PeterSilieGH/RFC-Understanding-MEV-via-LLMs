@@ -607,6 +607,14 @@ tr.expanded .expand-arrow { transform: rotate(90deg); display: inline-block; }
   margin: 3px 4px 0 0;
 }
 .swap-chip .arrow { color: var(--muted); }
+/* ADR-014: the feed-derived € notional appended to a swap chip in EUR mode */
+.swap-notional {
+  color: var(--blue);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+  padding-left: 2px;
+  border-left: 1px solid var(--border);
+}
 
 .empty-state {
   text-align: center;

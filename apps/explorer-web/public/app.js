@@ -238,6 +238,49 @@ function fmtAmount(amount) {
   return `${fmtNumber(amount.value)} ${amount.symbol}`;
 }
 
+// Always the token's own units + symbol, ignoring the EUR toggle. Used for
+// value flows that are intrinsically token→token (swap legs): pricing both
+// sides in € erases which tokens moved and makes an exchange look like a loss.
+function fmtTokenAmount(amount) {
+  if (!amount) return "";
+  return `${fmtNumber(amount.value)} ${amount.symbol}`;
+}
+
+// True when `amount` is currently being shown as a CoinGecko-converted € figure
+// (EUR toggle on and the token has a feed price) — i.e. the number is external-
+// feed-derived, not native/on-chain, and should be labeled as such.
+function isEurConverted(amount) {
+  return !!(
+    state.showEur &&
+    amount &&
+    amount.tokenAddress &&
+    state.eurPrices[amount.tokenAddress.toLowerCase()] != null
+  );
+}
+
+// Provenance tag for CoinGecko-feed-derived figures (the EUR conversions),
+// styled like ADR-014's pricing badges so "how the price was derived" is
+// visible wherever a € value is shown, not just for arbitrage.
+const FEED_TITLE =
+  "Converted at the current CoinGecko price — an external feed, approximate and not block-exact";
+function feedTag() {
+  return `<span class="price-method price-method-feed" title="${FEED_TITLE}">feed</span>`;
+}
+
+// The approximate € value routed through a swap (its notional size), from
+// whichever leg the feed can price. Only meaningful in EUR mode; null otherwise
+// or when neither token is priceable.
+function swapEurNotional(s) {
+  if (!state.showEur) return null;
+  for (const leg of [s.tokenIn, s.tokenOut]) {
+    if (leg && leg.tokenAddress) {
+      const price = state.eurPrices[leg.tokenAddress.toLowerCase()];
+      if (price != null) return leg.value * price;
+    }
+  }
+  return null;
+}
+
 // X4: the unit label shown for native-currency figures. In Ethereum (ETH)
 // mode we display "Ξ" (Greek capital Xi, the ETH symbol); the EUR toggle
 // overrides it. Value math is unchanged — this is purely the label.
@@ -413,10 +456,12 @@ const INSPECT_FLOOR_BLOCK = 11_000_000;
 const INTERVAL_SIZE = 100;
 const VALUE_POLL_MS = 30_000;
 
+// Colors mirror the Wiki's MEV-type code so the timeline reads the same as the
+// legend: arbitrage = green, sandwich = yellow, liquidation = blue.
 const VALUE_SERIES = [
-  { key: "arbitrage", label: "Arbitrage", color: "var(--blue, #7aa3c4)" },
-  { key: "sandwich", label: "Sandwich", color: "var(--red, #c47a7a)" },
-  { key: "liquidation", label: "Liquidation", color: "var(--green, #7fae7f)" },
+  { key: "arbitrage", label: "Arbitrage", color: "var(--green, #7fae7f)" },
+  { key: "sandwich", label: "Sandwich", color: "var(--yellow, #c4b46a)" },
+  { key: "liquidation", label: "Liquidation", color: "var(--blue, #7aa3c4)" },
 ];
 
 function timelineWindow() {
@@ -1165,7 +1210,8 @@ function incidentLegs(tx) {
 
 function profitSpan(amount) {
   const isLoss = amount.value < 0;
-  return `<span class="${isLoss ? "loss" : "profit"}">${fmtAmount(amount)}</span>`;
+  const tag = isEurConverted(amount) ? ` ${feedTag()}` : "";
+  return `<span class="${isLoss ? "loss" : "profit"}">${fmtAmount(amount)}</span>${tag}`;
 }
 
 function fmtDuration(seconds) {
@@ -1188,9 +1234,19 @@ function renderSwapChips(swaps) {
   if (!swaps.length) return "";
   return swaps
     .map((s) => {
-      const inStr = s.tokenIn ? fmtAmount(s.tokenIn) : "?";
-      const outStr = s.tokenOut ? fmtAmount(s.tokenOut) : "?";
-      return `<span class="swap-chip">${s.protocol || "swap"}: ${inStr} <span class="arrow">→</span> ${outStr}</span>`;
+      // A swap is a token→token exchange — show the token amounts (with symbols)
+      // regardless of the EUR toggle. Pricing BOTH legs in € erased which tokens
+      // moved and made every trade look like a loss (86 € → 82 €). In EUR mode we
+      // instead append ONE feed-labeled "≈ N €" notional: the value routed through
+      // the swap, not a per-leg re-pricing.
+      const inStr = s.tokenIn ? fmtTokenAmount(s.tokenIn) : "?";
+      const outStr = s.tokenOut ? fmtTokenAmount(s.tokenOut) : "?";
+      const notional = swapEurNotional(s);
+      const note =
+        notional != null
+          ? ` <span class="swap-notional" title="${FEED_TITLE}">≈ ${fmtNumber(notional)} €</span>`
+          : "";
+      return `<span class="swap-chip">${s.protocol || "swap"}: ${inStr} <span class="arrow">→</span> ${outStr}${note}</span>`;
     })
     .join("");
 }

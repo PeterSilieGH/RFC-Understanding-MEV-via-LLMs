@@ -89,6 +89,21 @@ export function anySandwichFrontrunTxHash(): string | null {
 }
 
 /**
+ * A sandwich front-run leg that also carries a decoded swap, as `block:txHash`,
+ * or null — so a test can open the row and check the swap value-flow rendering.
+ */
+export function anySandwichFrontrunWithSwap(): { block: number; txHash: string } | null {
+  const out = psql(
+    `SELECT s.block_number || ':' || s.frontrun_swap_transaction_hash
+     FROM sandwiches s JOIN swaps sw ON sw.transaction_hash = s.frontrun_swap_transaction_hash
+     ORDER BY s.block_number DESC LIMIT 1`,
+  );
+  if (!out) return null;
+  const [block, txHash] = out.split(":");
+  return { block: Number(block), txHash };
+}
+
+/**
  * A transaction hash from the latest block, via the external RPC node
  * (through explorer-api), or null when the node is unreachable.
  */
