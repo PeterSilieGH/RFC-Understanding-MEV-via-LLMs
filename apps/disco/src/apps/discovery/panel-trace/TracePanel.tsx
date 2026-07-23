@@ -34,18 +34,12 @@ import { NodesStoreProvider, traceNodesStore } from '../panel-nodes/store/store'
 import { NODE_WIDTH } from '../panel-nodes/store/utils/constants'
 import { Viewport } from '../panel-nodes/view/Viewport'
 import { usePanelStore } from '../store/panel-store'
+import { colorForCall } from './nodeColors'
 import { TraceLegend } from './TraceLegend'
 import { useTraceWorkspaceStore } from './workspace-store'
 
 const TREE_GAP_X = 120
 const TREE_GAP_Y = 24
-
-// 1-based indexes into SELECTABLE_COLORS (view/colors/colors.ts)
-const COLOR_RED = 1
-const COLOR_ORANGE = 2
-const COLOR_GREEN = 5
-const COLOR_BLUE = 7
-const COLOR_PURPLE = 8
 
 export function TracePanel(props: { initialTxHash?: string }) {
   const [input, setInput] = useState(props.initialTxHash ?? '')
@@ -304,22 +298,6 @@ function useSyncGraphSelectionToPanelStore(workspace: TraceWorkspace | undefined
     highlight(addresses)
     select(addresses[0])
   }, [graphSelected, workspace, select, highlight])
-}
-
-function colorForCall(call: TraceCallNode, isSwap: boolean): number {
-  if (call.error) return COLOR_RED
-  if (isSwap) return COLOR_ORANGE
-  switch (call.type) {
-    case 'DELEGATECALL':
-      return COLOR_PURPLE
-    case 'CREATE':
-    case 'CREATE2':
-      return COLOR_GREEN
-    case 'STATICCALL':
-      return 0
-    default:
-      return COLOR_BLUE
-  }
 }
 
 function shortAddress(address: string | null): string {

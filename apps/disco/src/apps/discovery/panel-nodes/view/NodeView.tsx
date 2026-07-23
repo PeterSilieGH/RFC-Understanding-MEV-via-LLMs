@@ -22,10 +22,10 @@ export interface NodeViewProps {
   // render.
   fieldHighlightedMask: string
   fieldTargetHiddenMask: string
-  // DIVERGENCE(mev): the analyze-code / analyze-value skills have covered this
-  // node's address (ADR-009). Two distinct ticks in the header.
-  hasCodeMark: boolean
-  hasValueMark: boolean
+  // DIVERGENCE(mev): a current MEV / vulnerability Discovery bundle covers this
+  // node's address (ADR-018 §2). Two distinct ticks (M / V) in the header.
+  hasMevMark: boolean
+  hasVulnMark: boolean
   // DIVERGENCE(mev): the build-verdict skill flagged this node as important to
   // the incident but not yet analyzed (ADR-009). Shown only until it is covered.
   isImportant: boolean
@@ -74,8 +74,8 @@ function NodeViewImpl(props: NodeViewProps) {
           <div className="truncate">{props.node.name}</div>
           <div className="flex items-center gap-0.5">
             <AnalyzeTicks
-              hasCodeMark={props.hasCodeMark}
-              hasValueMark={props.hasValueMark}
+              hasMevMark={props.hasMevMark}
+              hasVulnMark={props.hasVulnMark}
               isImportant={props.isImportant}
             />
             {props.node.isInitial && <IconInitial className="text-aux-green" />}
@@ -135,30 +135,30 @@ export const NodeView = memo(NodeViewImpl, (prev, next) => {
     prev.isOverlapping === next.isOverlapping &&
     prev.fieldHighlightedMask === next.fieldHighlightedMask &&
     prev.fieldTargetHiddenMask === next.fieldTargetHiddenMask &&
-    prev.hasCodeMark === next.hasCodeMark &&
-    prev.hasValueMark === next.hasValueMark &&
+    prev.hasMevMark === next.hasMevMark &&
+    prev.hasVulnMark === next.hasVulnMark &&
     prev.isImportant === next.isImportant
   )
 })
 
-// DIVERGENCE(mev): ADR-012 typed bundle coverage. The legacy prop slots remain
-// stable for the graph renderer, but now mean MEV and vulnerability bundles.
+// DIVERGENCE(mev): ADR-018 §2 per-kind bundle coverage. M = a current MEV
+// Discovery bundle covers this node; V = a current vulnerability bundle does.
 function AnalyzeTicks(props: {
-  hasCodeMark: boolean
-  hasValueMark: boolean
+  hasMevMark: boolean
+  hasVulnMark: boolean
   isImportant: boolean
 }) {
   const flagImportant =
-    props.isImportant && !props.hasCodeMark && !props.hasValueMark
-  if (!props.hasCodeMark && !props.hasValueMark && !flagImportant) return null
+    props.isImportant && !props.hasMevMark && !props.hasVulnMark
+  if (!props.hasMevMark && !props.hasVulnMark && !flagImportant) return null
   return (
     <span className="flex items-center gap-px font-bold text-[9px] leading-none">
-      {props.hasCodeMark && (
+      {props.hasMevMark && (
         <span className="text-aux-red" title="MEV bundle available">
           M
         </span>
       )}
-      {props.hasValueMark && (
+      {props.hasVulnMark && (
         <span className="text-aux-red" title="Vulnerability bundle available">
           V
         </span>

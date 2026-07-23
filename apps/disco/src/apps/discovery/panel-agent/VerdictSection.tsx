@@ -15,7 +15,7 @@ import { Button } from '../../../components/Button'
 import { Loader } from '../../../components/Loader'
 import { Markdown } from '../../../components/Markdown'
 import { useAgentModelStore } from './model-store'
-import { marksFor, useAgentMarksStore } from './store'
+import { bundleCoverage, marksFor, useAgentMarksStore } from './store'
 import { buildSwapContext, buildTraceTreeContext } from './traceTree'
 import { VerdictChat } from './VerdictChat'
 
@@ -52,8 +52,14 @@ export function VerdictSection(props: { project: string }) {
     setError(null)
     setLive('')
 
+    // ADR-018 §2: "analyzed" = ADR-009 analyze code/value coverage plus every
+    // contract a current Discovery bundle covers (bundles no longer fold into
+    // code/value).
     const marks = marksFor(useAgentMarksStore.getState(), project)
-    const analyzed = [...new Set([...marks.code, ...marks.value])]
+    const coverage = bundleCoverage(marks.bundles)
+    const analyzed = [
+      ...new Set([...marks.code, ...marks.value, ...coverage.mev, ...coverage.vuln]),
+    ]
     const [traceTree, swaps] = await Promise.all([
       buildTraceTreeContext(txHash),
       buildSwapContext(txHash),

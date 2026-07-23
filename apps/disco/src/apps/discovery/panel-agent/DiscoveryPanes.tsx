@@ -131,19 +131,25 @@ export function DiscoveryPanes(props: { project: string }) {
         })}
       </div>
 
-      {activeKind && !collapsed && (
+      {/* ADR-018 §7: both kind panes stay mounted and toggle visibility, so an
+          in-flight run (its live stream, reasoning, and abort handle live in
+          component state) survives a tab switch or collapse instead of being
+          unmounted and orphaned. Keying by kind (not activeKind) prevents the
+          remount; nothing here calls abort() on switch. */}
+      {kinds.map((kind) => (
         <DiscoveryKind
-          key={activeKind}
+          key={kind}
+          hidden={kind !== activeKind || collapsed}
           project={project}
           incident={txHash ?? project}
           txHash={txHash}
-          kind={activeKind}
-          bundles={bundles.filter((bundle) => bundle.kind === activeKind)}
-          candidates={candidates.filter((candidate) => candidate.kind === activeKind)}
+          kind={kind}
+          bundles={bundles.filter((bundle) => bundle.kind === kind)}
+          candidates={candidates.filter((candidate) => candidate.kind === kind)}
           catalogFingerprint={fingerprint}
           preparing={preparing}
         />
-      )}
+      ))}
     </div>
   )
 }
@@ -167,6 +173,8 @@ function DiscoveryKind(props: {
   candidates: PreparedCandidate[]
   catalogFingerprint: string | null
   preparing: boolean
+  // ADR-018 §7: hidden panes stay mounted so their in-flight run keeps streaming.
+  hidden: boolean
 }) {
   const { project, incident, txHash, kind, bundles, candidates, catalogFingerprint, preparing } =
     props
@@ -351,7 +359,9 @@ function DiscoveryKind(props: {
   }, [turns.length, pendingQuestion, live, reasoning])
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-2 p-2">
+    <section
+      className={`flex min-h-0 flex-1 flex-col gap-2 p-2${props.hidden ? ' hidden' : ''}`}
+    >
       <div className="flex items-center justify-end">
         <Button
           size="small"
