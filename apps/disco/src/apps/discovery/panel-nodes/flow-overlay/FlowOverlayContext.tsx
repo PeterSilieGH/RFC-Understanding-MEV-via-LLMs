@@ -8,7 +8,6 @@ import {
 import {
   createContext,
   type ReactNode,
-  useCallback,
   useContext,
   useMemo,
   useState,
@@ -18,7 +17,11 @@ import { useStore } from '../store/store'
 import { buildFlowGeometry, type FlowVisualEdge } from './geometry'
 
 export type FlowOverlayRoute = 'trace' | 'project'
+// The overlay layers (edge kinds). `default` is not a layer — it means "show the
+// structural graph, no semantic overlay".
 export type FlowOverlayLayer = 'control' | 'funds'
+// ADR-018 §1: the node pane exposes one exclusive edge mode.
+export type FlowOverlayMode = 'default' | FlowOverlayLayer
 
 interface FlowOverlaySource {
   route: FlowOverlayRoute
@@ -28,9 +31,8 @@ interface FlowOverlaySource {
 }
 
 interface FlowOverlayState extends FlowOverlaySource {
-  control: boolean
-  funds: boolean
-  toggle: (layer: FlowOverlayLayer) => void
+  mode: FlowOverlayMode
+  setMode: (mode: FlowOverlayMode) => void
   selection: ReturnType<typeof selectFlowEdges>
   nodes: readonly Node[]
   hidden: readonly string[]
@@ -41,9 +43,8 @@ const EMPTY_SOURCE: FlowOverlayState = {
   route: 'project',
   edges: [],
   loading: false,
-  control: false,
-  funds: false,
-  toggle: () => undefined,
+  mode: 'default',
+  setMode: () => undefined,
   selection: {
     edges: [],
     lod: 'detail',
@@ -64,8 +65,9 @@ export function FlowOverlayProvider(props: {
   error?: string
   children: ReactNode
 }) {
-  const [control, setControl] = useState(false)
-  const [funds, setFunds] = useState(false)
+  // ADR-018 §1: exactly one edge mode is visible at a time. `default` shows the
+  // structural graph and no semantic overlay.
+  const [mode, setMode] = useState<FlowOverlayMode>('default')
   const nodes = useStore((store) => store.nodes)
   const hidden = useStore((store) => store.hidden)
   const selected = useStore((store) => store.selected)
@@ -75,13 +77,8 @@ export function FlowOverlayProvider(props: {
   )
   const allEdges = props.route === 'project' ? projectEdges : (props.edges ?? [])
   const activeEdges = useMemo(
-    () =>
-      allEdges.filter(
-        (edge) =>
-          (edge.layer === 'control' && control) ||
-          (edge.layer === 'funds' && funds),
-      ),
-    [allEdges, control, funds],
+    () => (mode === 'default' ? [] : allEdges.filter((edge) => edge.layer === mode)),
+    [allEdges, mode],
   )
   const selection = useMemo(
     () =>
@@ -95,19 +92,14 @@ export function FlowOverlayProvider(props: {
     () => buildFlowGeometry(selection.edges, nodes, hidden),
     [selection.edges, nodes, hidden],
   )
-  const toggle = useCallback((layer: FlowOverlayLayer) => {
-    if (layer === 'control') setControl((value) => !value)
-    else setFunds((value) => !value)
-  }, [])
   const value = useMemo<FlowOverlayState>(
     () => ({
       route: props.route,
       edges: allEdges,
       loading: props.loading ?? false,
       error: props.error,
-      control,
-      funds,
-      toggle,
+      mode,
+      setMode,
       selection,
       nodes,
       hidden,
@@ -118,9 +110,7 @@ export function FlowOverlayProvider(props: {
       allEdges,
       props.loading,
       props.error,
-      control,
-      funds,
-      toggle,
+      mode,
       selection,
       nodes,
       hidden,
@@ -136,6 +126,8 @@ export function FlowOverlayProvider(props: {
 
 export function useFlowOverlayControls() {
   const state = useContext(FlowOverlayContext)
+  // `default` is always selectable; a layer is disabled when it has no evidence
+  // (or funds is out of scope on a project route).
   const disabledReason = (layer: FlowOverlayLayer): string | undefined => {
     if (layer === 'funds' && state.route === 'project') {
       return 'Funds requires a transaction or incident scope.'
@@ -151,9 +143,8 @@ export function useFlowOverlayControls() {
   }
   return {
     route: state.route,
-    control: state.control,
-    funds: state.funds,
-    toggle: state.toggle,
+    mode: state.mode,
+    setMode: state.setMode,
     disabledReason,
   }
 }
@@ -162,7 +153,8 @@ export function useFlowOverlaySelection() {
   const state = useContext(FlowOverlayContext)
   return {
     ...state.selection,
-    enabled: state.control || state.funds,
+    enabled: state.mode !== 'default',
+    mode: state.mode,
     hidden: state.hidden,
     nodes: state.nodes,
     geometry: state.geometry,

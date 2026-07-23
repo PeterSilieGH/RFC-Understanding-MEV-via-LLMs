@@ -48,6 +48,17 @@ discovery-project route, Funds stays disabled ("requires a transaction or
 incident scope", ADR-017) and Default/Control remain. Toggling modes performs no
 upstream work (the graph payload already carries `flowEdges`, ADR-017 §5).
 
+**Implementation note.** Default is rendered by the existing structural
+connection layer (`NodesAndConnections` / `NodesAndConnectionsWebGL`,
+`view.connections`), not by synthesizing flow lanes — that layer already draws
+field-accurate ports between the same node boxes and its color (`COFFEE_400`,
+≈`#a98763`) is already the brown accent. Exclusivity is achieved by **hiding the
+structural connection layer whenever an overlay mode is active** (gated on
+`mode === 'default'` in both the DOM and WebGL renderers), so exactly one edge
+picture is visible; the overlay lanes and the structural edges are never stacked.
+The overlay palette lives in one shared table (`flow-overlay/flowColors.ts`) read
+by both renderers and the legend.
+
 ### 2. Reintroduce per-kind analyze marks (M for MEV, V for Vulnerability)
 
 **Today.** `useAgentMarksStore` tracks `code`/`value` coverage and renders two

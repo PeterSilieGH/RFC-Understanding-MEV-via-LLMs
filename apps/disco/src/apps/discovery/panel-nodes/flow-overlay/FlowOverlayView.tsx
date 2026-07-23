@@ -1,6 +1,7 @@
 // DIVERGENCE(mev): renderer-native flow views for ADR-016. DOM gets SVG;
 // WebGL gets GPU paths in NodesAndConnectionsWebGL plus this HTML detail layer.
 import { useId } from 'react'
+import { FLOW_COLOR_HEX, type FlowColorKind } from './flowColors'
 import { useFlowOverlaySelection } from './FlowOverlayContext'
 import {
   flowPath,
@@ -104,22 +105,34 @@ export function FlowOverlayWebGLDetails() {
 }
 
 export function FlowOverlayLegend() {
-  const { enabled, geometry, lod, truncatedCount, originalCount } = useFlowGeometry()
-  if (!enabled) return null
+  const { enabled, mode, geometry, lod, truncatedCount, originalCount } =
+    useFlowGeometry()
+  // ADR-018 §1: the legend is route-/mode-aware — it describes the one active
+  // overlay (Default draws no overlay, so no legend). Attempted/reverted is only
+  // relevant to the control layer.
+  if (!enabled || mode === 'default') return null
+  const active =
+    mode === 'control'
+      ? { color: FLOW_COLOR_HEX.control, label: 'Control / order + status' }
+      : { color: FLOW_COLOR_HEX.funds, label: 'Funds / tokens + value' }
   return (
     <div className="pointer-events-none absolute top-2 right-2 z-20 rounded border border-coffee-600 bg-coffee-800/90 p-2 text-[11px] text-coffee-200 leading-tight">
       <div className="flex items-center gap-1.5">
-        <span className="inline-block h-0.5 w-4 bg-sky-400" />
-        <span>Control / configured authority</span>
+        <span
+          className="inline-block h-0.5 w-4"
+          style={{ backgroundColor: active.color }}
+        />
+        <span>{active.label}</span>
       </div>
-      <div className="mt-1 flex items-center gap-1.5">
-        <span className="inline-block h-0.5 w-4 bg-aux-orange" />
-        <span>Funds / committed</span>
-      </div>
-      <div className="mt-1 flex items-center gap-1.5">
-        <span className="inline-block w-4 border-aux-red border-t border-dashed" />
-        <span>Attempted / reverted</span>
-      </div>
+      {mode === 'control' && (
+        <div className="mt-1 flex items-center gap-1.5">
+          <span
+            className="inline-block w-4 border-t border-dashed"
+            style={{ borderColor: FLOW_COLOR_HEX.attempted }}
+          />
+          <span>Attempted / reverted</span>
+        </div>
+      )}
       <div className="mt-1 text-coffee-400">
         {lod} · {geometry.length}/{originalCount} edges
         {truncatedCount > 0 ? ` · ${truncatedCount} capped` : ''}
@@ -128,10 +141,8 @@ export function FlowOverlayLegend() {
   )
 }
 
-function flowColor(kind: 'control' | 'funds' | 'attempted'): string {
-  if (kind === 'control') return '#38bdf8'
-  if (kind === 'attempted') return '#fb4a35'
-  return '#fe8019'
+function flowColor(kind: FlowColorKind): string {
+  return FLOW_COLOR_HEX[kind]
 }
 
 function geometryBounds(geometry: readonly FlowVisualEdge[]) {

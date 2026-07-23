@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { bundleCoverage, useAgentMarksStore } from '../../panel-agent/store'
+import { useFlowOverlaySelection } from '../flow-overlay/FlowOverlayContext'
 import { useGlobalSettingsStore } from '../../store/global-settings-store'
 import type { Node } from '../store/State'
 import { useStore } from '../store/store'
@@ -77,8 +78,12 @@ export function NodesAndConnections() {
     ],
   )
 
+  // ADR-018 §1: the structural connection layer is the "Default" edge mode. When
+  // a semantic overlay (Control/Funds) is active it replaces this layer, so the
+  // three modes are mutually exclusive rather than stacked.
+  const { mode } = useFlowOverlaySelection()
   const bounds = view.bounds
-  const svg = bounds && (
+  const svg = bounds && mode === 'default' && (
     <svg
       viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`}
       className="pointer-events-none absolute"
