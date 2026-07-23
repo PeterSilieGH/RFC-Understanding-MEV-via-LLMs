@@ -5,6 +5,21 @@ Prepared 2026-07-23. Implements ADR-018
 `feat/adr-018-discovery-polish`, rebased onto `main` (ADR-016 PR #3 and ADR-017
 PR #4 have merged). No nginx/Express body-limit changes.
 
+## Implementation status (2026-07-23)
+
+- **Items 7, 4, 2, 1, 6, 3 — implemented and statically verified** (disco
+  `tsc --noEmit` clean; agent-api `tsc` + `vitest` green, 37 tests incl. the new
+  `discoveryPrompt` snapshot; agent-api Biome clean; `apps/disco` is Biome-excluded
+  and kept in its l2beat single-quote/no-semicolon style). Runtime/Playwright
+  verification (below) is still pending a stack bring-up.
+- **Item 5 (interactive latency) — deferred, not yet implemented.** Its acceptance
+  is a *runtime before/after measurement*, and its two highest-impact levers
+  (child parallelism, evidence pre-warm) interact directly with the
+  connection-capped RPC node, so they must be built against a running stack and
+  measured — not committed blind. Sequenced as the next slice; the safest first
+  sub-step is bounding the eager candidate surface (client-only), followed by
+  `AGENT_CHILD_MAX_CONCURRENCY` and incremental verdict under runtime observation.
+
 ## Outcome and invariants
 
 When complete:
