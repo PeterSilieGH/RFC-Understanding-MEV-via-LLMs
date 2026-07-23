@@ -24,6 +24,13 @@ server {
     proxy_read_timeout 120s;
   }
 
+  # ADR-017 §4: flagging an incident writes to the explorer-api store so it
+  # surfaces in the Explorer "Flagged TXs" view across the two origins.
+  location /api/flagged {
+    proxy_pass http://127.0.0.1:${EXPLORER_API_PORT};
+    proxy_set_header Host $host;
+  }
+
   location /api/agent/ {
     proxy_pass http://127.0.0.1:${AGENT_API_PORT};
     proxy_set_header Host $host;

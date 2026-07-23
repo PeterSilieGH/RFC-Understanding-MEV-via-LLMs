@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useAgentMarksStore } from '../../panel-agent/store'
-import { useResearchStore } from '../../panel-agent/research-store'
 import { useGlobalSettingsStore } from '../../store/global-settings-store'
 import type { Node } from '../store/State'
 import { useStore } from '../store/store'
@@ -47,8 +46,6 @@ export function NodesAndConnections() {
   const projectMarks = useAgentMarksStore((s) =>
     project ? s.byProject[project] : undefined,
   )
-  const mevResearch = useResearchStore((state) => state.mev)
-  const vulnResearch = useResearchStore((state) => state.vuln)
   const marks = useMemo(
     () => ({
       code: new Set(projectMarks?.code ?? []),
@@ -113,8 +110,8 @@ export function NodesAndConnections() {
             isOverlapping={flags.isOverlapping}
             fieldHighlightedMask={flags.fieldHighlightedMask}
             fieldTargetHiddenMask={flags.fieldTargetHiddenMask}
-            hasCodeMark={mevResearch && marks.code.has(addr)}
-            hasValueMark={vulnResearch && marks.value.has(addr)}
+            hasCodeMark={marks.code.has(addr)}
+            hasValueMark={marks.value.has(addr)}
             isImportant={marks.important.has(addr)}
           />
         )

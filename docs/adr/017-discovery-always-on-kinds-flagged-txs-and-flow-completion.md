@@ -53,18 +53,24 @@ Separately, this ADR records the **completion status of ADR-016's fund/control
 node-pane enrichments (E9/E10)** and closes the remaining gap:
 
 - The UI controls exist (`Controls.tsx` → two `FlowToggleButton`s), the semantic
-  model and derivation exist (`@mev/trace-graph` `buildTraceFlowEdges`,
+  model exists (`@mev/trace-graph` `buildTraceFlowEdges`,
   `buildConfiguredControlEdges`), and both renderers consume them
   (`FlowOverlayView`, `geometry.ts`).
-- **But** the trace-route overlay derives its edges **client-side from the
-  already-fetched graph** (`graph.flowEdges ?? buildTraceFlowEdges({nodes,
-  edges, tokenTransfers})`). The versioned, cacheable **trace-api flow endpoint**
-  ADR-016 §5/E9 specified (server-side canonical movement ids from receipt logs
-  + native-value rules, reading only Postgres evidence) was **never built**;
-  `graph.flowEdges` is always `undefined` in practice.
-- The overlays are **not runtime-verified**: the running `disco-web` is still the
-  pre-ADR-016 image, and no Playwright coverage exercises the toggles, legend, or
-  LOD tiers.
+- **Correction to an earlier draft of this ADR:** the flow edges *are* built
+  server-side. `apps/trace-api/src/traceEvidence.ts` `executionToGraph()`
+  populates `graph.flowEdges` from persisted execution + flow evidence (control
+  edges via `buildTraceFlowEdges`, fund movements via `flowMovementsToEdges`) and
+  returns them in the graph payload. A runtime check on a real incident confirms
+  it: `GET /api/traces/:hash/graph` returns **75 flow edges (59 control /
+  observed, 16 funds / committed)**. The client's
+  `graph.flowEdges ?? buildTraceFlowEdges(...)` therefore consumes
+  server-authoritative, evidence-backed edges and only falls back to client
+  derivation for an older payload. There is no separate `/flow` endpoint, but the
+  ADR-016 §5/E9 intent (evidence-backed flow, no upstream work on toggle) is met
+  by the graph payload.
+- The genuine gap is **verification**: the overlays have never been
+  runtime-verified in the UI, and no Playwright coverage exercises the toggles,
+  legend, LOD tiers, or the no-upstream-work guarantee.
 
 ## Decision
 
@@ -149,31 +155,29 @@ Persistence is server-side and shared across both origins; it is **not**
 `localStorage`. Removing a flag deletes only the flag row; it never deletes the
 synthetic project or any evidence.
 
-### 5. Complete and verify the fund/control flow overlays
+### 5. Verify the fund/control flow overlays; the separate endpoint is deferred
 
-ADR-016's flow overlays are retained. This ADR closes the E9 server gap and adds
-runtime verification:
+ADR-016's flow overlays are retained. Given the finding above — flow edges are
+already built server-side from persisted evidence and delivered in the graph
+payload — the separate `GET /api/traces/:hash/flow` endpoint proposed in an
+earlier draft is **deferred**: it would add no fidelity over the
+graph-carried, server-authoritative `graph.flowEdges`, and toggling already
+performs no upstream work (it re-renders the already-fetched graph). The
+graph payload is documented as the supported source; `buildTraceFlowEdges`
+remains a pure client-side fallback for an older payload lacking `flowEdges`.
 
-- Add the versioned, cacheable **trace-api flow endpoint**
-  (`GET /api/traces/:hash/flow`) that returns the `FlowEdge[]` payload built from
-  **persisted execution + receipt evidence** (the canonical movement-id and
-  native-movement rules from ADR-016 §5), reading only Postgres evidence — no
-  RPC/source/token/decompiler work. The client prefers this payload
-  (`graph.flowEdges`) and keeps `buildTraceFlowEdges` as a pure client-side
-  fallback when the endpoint is absent/older. One shared React Query key makes
-  toggling reuse the cached payload.
+The remaining work is therefore **verification**, previously skipped:
+
 - The project-route **Control** overlay (configured permissions from
   `discovered.json`) and disabled-**Funds** state are unchanged.
-- **Runtime verification** (previously skipped): rebuild `disco-web`, and add
-  Playwright coverage to `e2e/disco.spec.ts` for Control/Funds beside Show/Hide,
-  toggle on/off, the legend, hidden-node handling, project-route Funds disabled,
-  and identical behaviour with the WebGL renderer — asserting **zero** upstream
-  RPC/source/token/decompiler calls while toggling (ADR-016 §5/E10 acceptance).
+- Rebuild `disco-web` and add Playwright coverage to `e2e/disco.spec.ts` for
+  Control/Funds beside Show/Hide, toggle on/off, the legend, hidden-node
+  handling, project-route Funds disabled, and identical behaviour with the WebGL
+  renderer — asserting **zero** upstream RPC/source/token/decompiler calls while
+  toggling (ADR-016 §5/E10 acceptance). Toggling must not refetch the graph.
 
-If, during implementation, the server endpoint proves to add no fidelity over the
-graph-derived edges for the incident snapshots we support, it may be deferred —
-but the client-side derivation must then be explicitly documented as the
-supported source and still covered by the Playwright no-upstream-work assertion.
+If a future incident snapshot shows the graph-carried edges are insufficient, the
+dedicated endpoint can be revisited; until then it is intentionally not built.
 
 ## Consequences
 

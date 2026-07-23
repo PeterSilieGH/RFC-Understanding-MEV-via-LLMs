@@ -1,7 +1,12 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import {
+  flagTx,
+  flaggedQueryOptions,
+  unflagTx,
+} from '../../../api/flagged'
 import { traceWorkspaceQueryOptions } from '../../../api/traces'
 import { Button } from '../../../components/Button'
 import { IS_READONLY } from '../../../config/readonly'
@@ -10,7 +15,6 @@ import { IconPlus } from '../../../icons/IconPlus'
 import { IconRefresh } from '../../../icons/IconRefresh'
 import { useTerminalStore } from '../panel-terminal/store'
 import { useDiscoveryCommand } from '../panel-terminal/useDiscoveryCommand'
-import { useResearchStore } from '../panel-agent/research-store'
 import { Search } from '../search/Search'
 import { SettingsDialog } from './SettingsDialog'
 // DIVERGENCE(mev): store resolved via context so the trace workspace
@@ -22,23 +26,73 @@ import { addPanel, useActiveDockingStore } from './store'
 // project name (ADR-008, wp-trace-polish). The extracted-value figure was
 // removed from the bar (ADR-013 §1); value lives on the explorer timeline and
 // the Values/Discovery surfaces.
+function incidentKind(legs: { viaType: string | null }[]): string {
+  const viaTypes = legs
+    .map((leg) => leg.viaType)
+    .filter((t): t is string => t !== null)
+  return viaTypes.find((t) => t.startsWith('sandwich'))
+    ? 'sandwich'
+    : (viaTypes[0]?.split('_')[0] ?? 'trace')
+}
+
 function useIncidentIdentity(): ReactNode | undefined {
   const { txHash } = useParams()
   const workspace = useQuery(traceWorkspaceQueryOptions(txHash))
   const legs = workspace.data?.legs ?? []
   if (!txHash) return undefined
 
-  const viaTypes = legs
-    .map((leg) => leg.viaType)
-    .filter((t): t is string => t !== null)
-  const kind = viaTypes.find((t) => t.startsWith('sandwich'))
-    ? 'sandwich'
-    : (viaTypes[0]?.split('_')[0] ?? 'trace')
-
   return (
     <p>
-      {kind} · {`${txHash.slice(0, 10)}…`}
+      {incidentKind(legs)} · {`${txHash.slice(0, 10)}…`}
     </p>
+  )
+}
+
+// ADR-017 §4: flag the current incident so it can be reopened from the Explorer
+// "Flagged TXs" view. Only shown on a trace route (an incident exists).
+function IncidentFlagButton(props: { project: string }) {
+  const { txHash } = useParams()
+  const queryClient = useQueryClient()
+  const workspace = useQuery(traceWorkspaceQueryOptions(txHash))
+  const flagged = useQuery(flaggedQueryOptions())
+  if (!txHash) return null
+
+  const isFlagged = (flagged.data ?? []).some(
+    (entry) => entry.txHash.toLowerCase() === txHash.toLowerCase(),
+  )
+  const legs = workspace.data?.legs ?? []
+  const busy = flagged.isPending
+
+  const toggle = async () => {
+    if (isFlagged) {
+      await unflagTx(txHash)
+    } else {
+      await flagTx({
+        txHash,
+        project: props.project,
+        blockNumber: workspace.data?.snapshot?.blockNumber ?? null,
+        label: incidentKind(legs),
+      })
+    }
+    await queryClient.invalidateQueries({ queryKey: ['flagged'] })
+  }
+
+  return (
+    <Button
+      size="small"
+      className="gap-1 rounded-sm"
+      variant={isFlagged ? 'solid' : undefined}
+      disabled={busy}
+      title={
+        isFlagged
+          ? 'Remove this incident from Flagged TXs'
+          : 'Flag this incident so it can be reopened from the Explorer'
+      }
+      onClick={() => void toggle()}
+    >
+      <span>{isFlagged ? '★' : '☆'}</span>
+      <span className="max-md:hidden">{isFlagged ? 'Flagged' : 'Flag'}</span>
+    </Button>
   )
 }
 
@@ -51,9 +105,6 @@ export function TopBar(props: { project: string }) {
   const resetLayout = useDockingStore((state) => state.resetLayout)
   const { command } = useTerminalStore()
   const { killCommand, discover } = useDiscoveryCommand()
-  const mevResearch = useResearchStore((state) => state.mev)
-  const vulnResearch = useResearchStore((state) => state.vuln)
-  const toggleResearch = useResearchStore((state) => state.toggle)
 
   // By default when using top bar
   const useDevMode = true
@@ -70,34 +121,6 @@ export function TopBar(props: { project: string }) {
         </div>
       </div>
       <div className="hidden gap-3 md:flex">
-        <div className="flex items-center gap-1 border-coffee-400/30 border-r pr-3">
-          <button
-            type="button"
-            aria-pressed={mevResearch}
-            onClick={() => toggleResearch('mev')}
-            className={clsx(
-              'rounded-sm border px-2 py-1 text-xs',
-              mevResearch
-                ? 'border-autumn-300 bg-autumn-300 text-black'
-                : 'border-coffee-500 text-coffee-300',
-            )}
-          >
-            MEV Research
-          </button>
-          <button
-            type="button"
-            aria-pressed={vulnResearch}
-            onClick={() => toggleResearch('vuln')}
-            className={clsx(
-              'rounded-sm border px-2 py-1 text-xs',
-              vulnResearch
-                ? 'border-autumn-300 bg-autumn-300 text-black'
-                : 'border-coffee-500 text-coffee-300',
-            )}
-          >
-            Vulnerability Research
-          </button>
-        </div>
         {!IS_READONLY && (
           <div className="flex justify-center gap-1 border-coffee-400/30 border-r pr-3">
             <Button
@@ -109,6 +132,7 @@ export function TopBar(props: { project: string }) {
               <IconRefresh className="size-3" />
               <span className="max-md:hidden">Discover</span>
             </Button>
+            <IncidentFlagButton project={props.project} />
             <Button
               size="small"
               variant="destructive"

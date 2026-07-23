@@ -104,6 +104,8 @@ export interface TraceWorkspace {
   contracts?: Record<string, { name: string | null; address: string }>
   /** Present when ready: 4-byte selector -> function name from discovered ABIs. */
   selectors?: Record<string, string>
+  /** Incident snapshot resolved by trace-api (ADR-008/016). */
+  snapshot?: { blockNumber: number; blockHash: string; timestamp: number }
 }
 
 export function traceWorkspaceQueryOptions(txHash: string | undefined) {

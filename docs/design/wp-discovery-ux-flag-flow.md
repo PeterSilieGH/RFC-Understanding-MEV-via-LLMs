@@ -120,15 +120,19 @@ Acceptance:
   explorer-api restart.
 - Deleting a flag never touches the synthetic project or evidence.
 
-### E — Complete + verify the fund/control overlays (M)
+### E — Verify the fund/control overlays; separate endpoint deferred (M)
 
-- **trace-api:** add `GET /api/traces/:hash/flow` returning versioned `FlowEdge[]`
-  built from persisted execution + receipt evidence (ADR-016 §5 canonical
-  movement/native rules), reading only Postgres evidence — no RPC/source/token/
-  decompiler work. Reuse the coalescing/evidence layer from ADR-016 E2.
-- **client:** prefer the endpoint payload (`graph.flowEdges`) via one shared React
-  Query key; keep `buildTraceFlowEdges` as the pure fallback. Toggling reuses the
-  cached payload.
+- **Finding:** flow edges are already built server-side from persisted evidence.
+  `trace-api` `traceEvidence.ts` `executionToGraph()` sets `graph.flowEdges`
+  (control via `buildTraceFlowEdges`, funds via `flowMovementsToEdges`); a real
+  incident returns 75 edges (59 control, 16 funds) from
+  `GET /api/traces/:hash/graph`. The client already consumes these
+  (`graph.flowEdges ?? buildTraceFlowEdges(...)`), so the separate
+  `GET /api/traces/:hash/flow` endpoint is **deferred** — it adds no fidelity and
+  toggling already performs no upstream work. The graph payload is the documented
+  source; `buildTraceFlowEdges` stays the pure client fallback.
+- No trace-api or client change is required for the overlay source. The work is
+  verification.
 - **Playwright (`e2e/disco.spec.ts`):** after rebuilding `disco-web`, verify
   Control/Funds beside Show/Hide, labels/legend, toggle off, hidden nodes,
   project-route Funds disabled, and identical behaviour with the WebGL renderer —

@@ -27,6 +27,19 @@ CREATE TABLE IF NOT EXISTS tx_mempool (
 );
 `;
 
+// ADR-017 §4: operator-flagged incidents, written from DiscoUI and surfaced in
+// the Explorer "Flagged TXs" view. App-owned; keyed by canonical incident tx.
+export const FLAGGED_TX_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS flagged_transactions (
+  tx_hash TEXT PRIMARY KEY,
+  project TEXT,
+  block_number NUMERIC,
+  label TEXT,
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`;
+
 const LEDGER_SQL = `
 CREATE TABLE IF NOT EXISTS mev_schema_migrations (
   migration_id TEXT PRIMARY KEY,
@@ -68,7 +81,10 @@ export const PIPELINE_MIGRATIONS = Object.freeze([
   defineMigration("0001_native_pipeline", `${PIPELINE_SCHEMA_SQL}\n${DETECTOR_SCHEMA_SQL}`),
 ]);
 
-export const APP_MIGRATIONS = Object.freeze([defineMigration("0002_app_caches", APP_SCHEMA_SQL)]);
+export const APP_MIGRATIONS = Object.freeze([
+  defineMigration("0002_app_caches", APP_SCHEMA_SQL),
+  defineMigration("0005_flagged_transactions", FLAGGED_TX_SCHEMA_SQL),
+]);
 
 export const EVIDENCE_MIGRATIONS = Object.freeze([
   defineMigration("0003_shared_evidence", EVIDENCE_SCHEMA_SQL),
