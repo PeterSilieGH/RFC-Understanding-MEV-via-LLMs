@@ -45,6 +45,13 @@ const KIND_TITLE: Record<ResearchKind, string> = {
 // research toggle. Stable module-level array so the preparation key is stable.
 const ALL_KINDS: ResearchKind[] = ['mev', 'vuln']
 
+// ADR-018 §5: bound the eager analysis surface. Cached bundles are free to load,
+// but each unresolved candidate costs a lazy child model turn, and analysing a
+// dozen of them serialises a cold run into minutes. Default to analysing only the
+// most trace-relevant few (catalog order is relevance order); the rest stay
+// visible and selectable, so the user can opt into more.
+const EAGER_CANDIDATE_CAP = 5
+
 export function DiscoveryPanes(props: { project: string }) {
   const { project } = props
   const { txHash } = useParams()
@@ -207,6 +214,19 @@ function DiscoveryKind(props: {
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | undefined>(undefined)
   const conversationRef = useRef<HTMLDivElement | null>(null)
+
+  // ADR-018 §5: until the user touches the selection, default-exclude unresolved
+  // candidates beyond the eager cap so a cold run analyses only the top few.
+  // Cached bundles (`bundles`) are unaffected — they cost no child turn.
+  useEffect(() => {
+    if (selectionDirty) return
+    const overflow = candidates.slice(EAGER_CANDIDATE_CAP).map((candidate) => candidate.id)
+    setExcludedCandidates((current) =>
+      current.length === overflow.length && current.every((id, i) => id === overflow[i])
+        ? current
+        : overflow,
+    )
+  }, [candidates, selectionDirty])
 
   const selected = bundles.filter((bundle) => !excluded.includes(bundle.codehash))
   const selectedCandidates = candidates.filter(

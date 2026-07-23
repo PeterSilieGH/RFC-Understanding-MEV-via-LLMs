@@ -12,13 +12,20 @@ PR #4 have merged). No nginx/Express body-limit changes.
   `discoveryPrompt` snapshot; agent-api Biome clean; `apps/disco` is Biome-excluded
   and kept in its l2beat single-quote/no-semicolon style). Runtime/Playwright
   verification (below) is still pending a stack bring-up.
-- **Item 5 (interactive latency) — deferred, not yet implemented.** Its acceptance
-  is a *runtime before/after measurement*, and its two highest-impact levers
-  (child parallelism, evidence pre-warm) interact directly with the
-  connection-capped RPC node, so they must be built against a running stack and
-  measured — not committed blind. Sequenced as the next slice; the safest first
-  sub-step is bounding the eager candidate surface (client-only), followed by
-  `AGENT_CHILD_MAX_CONCURRENCY` and incremental verdict under runtime observation.
+- **Item 5 (interactive latency) — partially implemented.**
+  - *Done:* **bounded eager surface** (`EAGER_CANDIDATE_CAP` in `DiscoveryPanes`)
+    — a cold run default-analyses only the top few unresolved candidates (catalog
+    order = relevance order); the rest stay visible/selectable. Cached bundles are
+    unaffected. This directly cuts child-turn count per run and is client-only /
+    reversible, so it is correct without a runtime measurement.
+  - *Blocked on the live stack (RPC tunnel):* **child parallelism** (the permit
+    model in `scheduler.ts` deliberately forbids concurrent children —
+    `ProviderPermit.runChild` throws on a nested hand-off — so this is an
+    architectural change that must be measured against the provider cap and the
+    connection-capped node), **evidence pre-warm** (must not use the no-RPC
+    prepare route; needs a separate opt-in path + the tunnel to warm anything),
+    and **incremental/preliminary verdict**. Each of these has a *runtime
+    before/after* acceptance and must be built with the stack up.
 
 ## Outcome and invariants
 
