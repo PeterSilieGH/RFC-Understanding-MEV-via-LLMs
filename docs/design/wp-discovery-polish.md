@@ -10,8 +10,19 @@ PR #4 have merged). No nginx/Express body-limit changes.
 - **Items 7, 4, 2, 1, 6, 3 — implemented and statically verified** (disco
   `tsc --noEmit` clean; agent-api `tsc` + `vitest` green, 37 tests incl. the new
   `discoveryPrompt` snapshot; agent-api Biome clean; `apps/disco` is Biome-excluded
-  and kept in its l2beat single-quote/no-semicolon style). Runtime/Playwright
-  verification (below) is still pending a stack bring-up.
+  and kept in its l2beat single-quote/no-semicolon style).
+- **Runtime/Playwright verification — done (2026-07-23).** Stack rebuilt from this
+  worktree (agent-api, trace-api, disco-web) and brought up against the live RPC
+  tunnel. `e2e/disco.spec.ts` is **21/21 green** and `e2e/trace.spec.ts` **6/6
+  green**. New/updated coverage: **Item 1** — the manual-trace spec asserts the
+  exclusive `flow-mode-default|control|funds` control renders with Default pressed;
+  **Item 7** — a rewritten `U3` asserts both kind tabs are always-on with no
+  research toggle and that active/collapse/switch track `aria-pressed` (neither
+  pane unmounts). Three older tests that clicked the removed pre-ADR-017 "MEV
+  Research" toggle were updated to the always-on reality, and the `Trace` submit
+  button match was made `exact` (Item 1's Control/Funds aria-labels mention "the
+  loaded trace", which had made the loose match ambiguous — itself a live
+  confirmation that Item 1 renders).
 - **Item 5 (interactive latency) — measured; two levers done, parallelism
   dropped, pre-warm next.**
   - *Done:* **bounded eager surface** (`EAGER_CANDIDATE_CAP` in `DiscoveryPanes`)

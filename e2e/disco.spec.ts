@@ -115,11 +115,20 @@ test.describe("disco-web (cloned DiscoUI + trace panel)", () => {
 
     await page.goto(`${DISCO_WEB}/ui/trace`);
     await page.getByPlaceholder("Transaction hash (0x…)").fill(txHash as string);
-    await page.getByRole("button", { name: "Trace" }).click();
+    // `exact` — ADR-018 §1's Control/Funds overlay buttons carry aria-labels that
+    // mention "the loaded trace", so a loose name match is ambiguous here.
+    await page.getByRole("button", { name: "Trace", exact: true }).click();
 
     // nodes are titled by contract (call types live in the color legend)
     await expect(page.getByText(/^0x[0-9a-f]{4}/).first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("delegatecall")).toBeVisible();
+
+    // ADR-018 §1: the exclusive Default|Control|Funds edge-overlay control is present
+    // and defaults to Default (the structural graph). Control/Funds render too — they
+    // disable themselves when the loaded trace carries no control/funds-flow evidence.
+    await expect(page.getByTestId("flow-mode-default")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("flow-mode-control")).toBeVisible();
+    await expect(page.getByTestId("flow-mode-funds")).toBeVisible();
   });
 });
 
@@ -255,7 +264,7 @@ test.describe("ADR-013 Discovery UX refinements", () => {
     await expect(page.getByRole("option", { name: "Preview", exact: true })).toBeVisible();
   });
 
-  test("U3/U5: research kinds are hideable tabs and the bundle set is not inner-scrolled", async ({
+  test("U3 + ADR-017 §1/ADR-018 §7: both Discovery kinds are always-on hideable tabs", async ({
     page,
     request,
   }) => {
@@ -269,20 +278,29 @@ test.describe("ADR-013 Discovery UX refinements", () => {
     await page.getByRole("option", { name: "Discovery" }).click();
     await expect(switcher).toHaveText(/Discovery/);
 
-    // turn on MEV Research → a "MEV Discovery" tab and its pane (context meter) appear
-    await page.getByRole("button", { name: "MEV Research" }).click();
-    const tab = page.getByRole("button", { name: "MEV Discovery" });
-    await expect(tab).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(/Context:.*tokens/)).toBeVisible({ timeout: 15_000 });
+    // ADR-017 §1: both kind tabs are present with no research toggle; mev is active.
+    // The tabs render eagerly (independent of bundle preparation), and aria-pressed
+    // tracks the active/collapsed state — a deterministic signal for the toggle.
+    const mevTab = page.getByRole("button", { name: "MEV Discovery" });
+    const vulnTab = page.getByRole("button", { name: "Vulnerability Discovery" });
+    await expect(mevTab).toBeVisible({ timeout: 15_000 });
+    await expect(vulnTab).toBeVisible();
+    await expect(mevTab).toHaveAttribute("aria-pressed", "true");
+    await expect(vulnTab).toHaveAttribute("aria-pressed", "false");
 
-    // clicking the active tab collapses it (pane content hidden), tab remains
-    await tab.click();
-    await expect(page.getByText(/Context:.*tokens/)).toHaveCount(0);
-    await expect(tab).toBeVisible();
+    // ADR-013 §3: clicking the active tab collapses its pane; the tab remains.
+    await mevTab.click();
+    await expect(mevTab).toHaveAttribute("aria-pressed", "false");
+    await expect(mevTab).toBeVisible();
+    // clicking it again re-opens the pane
+    await mevTab.click();
+    await expect(mevTab).toHaveAttribute("aria-pressed", "true");
 
-    // clicking again re-opens it
-    await tab.click();
-    await expect(page.getByText(/Context:.*tokens/)).toBeVisible();
+    // ADR-018 §7: switching to the vuln tab activates it and deactivates mev
+    // (neither pane is unmounted — both stay mounted and toggle visibility).
+    await vulnTab.click();
+    await expect(vulnTab).toHaveAttribute("aria-pressed", "true");
+    await expect(mevTab).toHaveAttribute("aria-pressed", "false");
   });
 
   test("U1: the trace-workspace top bar shows kind + hash with no extracted-value figure", async ({
@@ -330,7 +348,7 @@ test.describe("ADR-013 Discovery UX refinements", () => {
     const switcher = page.getByRole("combobox", { name: "Panel" }).nth(2);
     await switcher.click({ timeout: 20_000 });
     await page.getByRole("option", { name: "Discovery" }).click();
-    await page.getByRole("button", { name: "MEV Research" }).click();
+    // ADR-017 §1: both Discovery kinds are always-on; the mev pane shows by default.
 
     const box = page.getByPlaceholder(/Enter to send/);
     await expect(box).toBeVisible({ timeout: 30_000 });
@@ -437,7 +455,7 @@ test.describe("ADR-013 Discovery UX refinements", () => {
     const switcher = page.getByRole("combobox", { name: "Panel" }).nth(2);
     await switcher.click({ timeout: 20_000 });
     await page.getByRole("option", { name: "Discovery" }).click();
-    await page.getByRole("button", { name: "MEV Research" }).click();
+    // ADR-017 §1: both Discovery kinds are always-on; the mev pane shows by default.
 
     await expect(page.getByText("Mock Router")).toBeVisible({ timeout: 15_000 });
     await page.getByRole("button", { name: "Discover", exact: true }).last().click();
@@ -527,7 +545,7 @@ test.describe("ADR-013 Discovery UX refinements", () => {
     const switcher = page.getByRole("combobox", { name: "Panel" }).nth(2);
     await switcher.click({ timeout: 20_000 });
     await page.getByRole("option", { name: "Discovery" }).click();
-    await page.getByRole("button", { name: "MEV Research" }).click();
+    // ADR-017 §1: both Discovery kinds are always-on; the mev pane shows by default.
     await firstStarted;
 
     await page.locator('a[href="/ui"]').first().click();
