@@ -8,6 +8,9 @@ COPY packages/config ./packages/config
 COPY packages/db ./packages/db
 # @mev/rpc: the one shared JsonRpcProvider per process (ADR-011 §3).
 COPY packages/rpc ./packages/rpc
+# @mev/evidence: shared evidence store (ADR-016); @mev/inspect depends on it to
+# persist normalized execution artifacts, so it must be present to build inspect.
+COPY packages/evidence ./packages/evidence
 # @mev/inspect: the native TypeScript inspector (ADR-010). Its abis/ directory
 # ships as source alongside dist/ (abi.ts resolves it relative to the package).
 COPY packages/inspect ./packages/inspect

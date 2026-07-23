@@ -2126,6 +2126,12 @@ function activateTab(name) {
     renderMempoolBlock();
     return;
   }
+  // ADR-017 §4: flags change out-of-band (written from DiscoUI), so re-fetch
+  // the list on every visit rather than caching it for the session.
+  if (name === "flagged") {
+    renderFlagged();
+    return;
+  }
   if (!loadedTabs.has(name)) {
     loadedTabs.add(name);
     if (name === "leaderboard") loadLeaderboard();
@@ -2136,6 +2142,58 @@ function activateTab(name) {
 document.querySelectorAll(".explore-tab").forEach((tab) => {
   tab.addEventListener("click", () => activateTab(tab.dataset.tab));
 });
+
+// ADR-017 §4: incidents flagged from the DiscoUI trace workspace. Fetched from
+// explorer-api's shared store so they persist and reopen the trace workspace.
+function escFlag(text) {
+  return String(text).replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+  );
+}
+async function renderFlagged() {
+  const el = document.getElementById("flaggedResults");
+  if (!el) return;
+  el.innerHTML = '<p class="explore-hint">Loading…</p>';
+  let flagged;
+  try {
+    const res = await fetch("/api/flagged");
+    if (!res.ok) throw new Error(res.statusText);
+    flagged = (await res.json()).flagged;
+  } catch (e) {
+    el.innerHTML = `<p class="explore-hint">Could not load flagged transactions: ${escFlag(e.message)}</p>`;
+    return;
+  }
+  if (!flagged.length) {
+    el.innerHTML =
+      '<p class="explore-hint">No flagged transactions yet. Open an incident in DiscoUI and use the Flag button.</p>';
+    return;
+  }
+  el.innerHTML = `<table class="flagged-table"><tbody>${flagged
+    .map((f) => {
+      const label = escFlag(f.label || "trace");
+      const block = f.blockNumber != null ? `block ${f.blockNumber}` : "";
+      return `<tr>
+        <td>${label}</td>
+        <td>${traceLink(f.txHash, 1)}</td>
+        <td class="mono"><a class="addr" href="https://etherscan.io/tx/${f.txHash}" target="_blank" rel="noopener">${shortHash(f.txHash)}</a></td>
+        <td class="dim">${block}</td>
+        <td><button class="flag-remove icon-btn" data-tx="${f.txHash}" title="Remove from Flagged TXs">✕</button></td>
+      </tr>`;
+    })
+    .join("")}</tbody></table>`;
+  el.querySelectorAll(".flag-remove").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await fetch(`/api/flagged/${btn.dataset.tx}`, { method: "DELETE" });
+      } catch {
+        // best-effort; re-render reflects the true server state
+      }
+      renderFlagged();
+    });
+  });
+}
 
 function applyTheme(theme) {
   if (theme === "light") {

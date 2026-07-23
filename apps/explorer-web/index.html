@@ -74,6 +74,7 @@
       <button class="explore-tab active" data-tab="mempool">Transaction Visibility</button>
       <button class="explore-tab" data-tab="income">Transaction Prices</button>
       <span class="explore-tabs-spacer"></span>
+      <button class="explore-tab" data-tab="flagged">Flagged TXs</button>
       <button class="explore-tab" data-tab="leaderboard">Leaderboard</button>
       <button class="explore-tab" data-tab="heatmap">Sandwiched pools</button>
       <button class="explore-tab" data-tab="builders">Builder &amp; relay share</button>
@@ -108,6 +109,12 @@
       <div id="topSearchersResults" class="top-searchers"></div>
       <p class="explore-hint">Per-type breakdown, ranked by action count.</p>
       <div id="leaderboardResults" class="leaderboard-grid"></div>
+    </div>
+
+    <!-- ADR-017 §4: incidents flagged from DiscoUI, reopenable here. -->
+    <div class="explore-panel hidden" id="panel-flagged">
+      <p class="explore-hint">Incidents you flagged from the DiscoUI trace workspace. Open one to reload its trace workspace, or remove it from this list.</p>
+      <div id="flaggedResults"></div>
     </div>
 
     <div class="explore-panel hidden" id="panel-heatmap">

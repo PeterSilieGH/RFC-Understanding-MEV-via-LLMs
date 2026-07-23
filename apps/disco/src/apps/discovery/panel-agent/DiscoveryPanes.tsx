@@ -29,10 +29,6 @@ import {
 } from './bundle-preparation-store'
 import { useAgentModelStore } from './model-store'
 import {
-  activeResearchKinds,
-  useResearchStore,
-} from './research-store'
-import {
   buildGasContext,
   buildSwapContext,
   buildTraceTreeContext,
@@ -44,11 +40,14 @@ const KIND_TITLE: Record<ResearchKind, string> = {
   vuln: 'Vulnerability Discovery',
 }
 
+// ADR-017 §1: both Discovery kinds are always available; there is no top-bar
+// research toggle. Stable module-level array so the preparation key is stable.
+const ALL_KINDS: ResearchKind[] = ['mev', 'vuln']
+
 export function DiscoveryPanes(props: { project: string }) {
   const { project } = props
   const { txHash } = useParams()
-  const research = useResearchStore()
-  const kinds = activeResearchKinds(research)
+  const kinds = ALL_KINDS
   const addBundleMarks = useAgentMarksStore((state) => state.addBundleMarks)
   const preparationInput = { project, kinds }
   const preparationKey = bundlePreparationKey(preparationInput)
@@ -67,7 +66,7 @@ export function DiscoveryPanes(props: { project: string }) {
     activeTab && kinds.includes(activeTab) ? activeTab : kinds[0]
 
   useEffect(() => {
-    if (kinds.length > 0) void ensureBundlePreparation(preparationInput)
+    void ensureBundlePreparation(preparationInput)
   }, [preparationKey])
 
   useEffect(() => {
@@ -102,43 +101,35 @@ export function DiscoveryPanes(props: { project: string }) {
           <Button size="small" onClick={() => void retry()}>Retry missing</Button>
         </div>
       )}
-      {kinds.length === 0 && (
-        <p className="p-2 text-coffee-400 text-xs italic">
-          Select MEV Research or Vulnerability Research to prepare grounded bundles.
-        </p>
-      )}
-
-      {/* ADR-013 §3: one tab per active kind. Clicking the active tab collapses
-          it; clicking another selects it. */}
-      {kinds.length > 0 && (
-        <div className="flex items-stretch gap-px border-coffee-600 border-b bg-coffee-900">
-          {kinds.map((kind) => {
-            const isActive = kind === activeKind && !collapsed
-            return (
-              <button
-                type="button"
-                key={kind}
-                aria-pressed={isActive}
-                className={
-                  isActive
-                    ? 'border-autumn-300 border-b-2 px-3 py-1.5 font-bold text-coffee-100 text-xs uppercase'
-                    : 'border-transparent border-b-2 px-3 py-1.5 text-coffee-300 text-xs uppercase hover:text-coffee-100'
+      {/* ADR-013 §3 / ADR-017 §1: one tab per kind, both always present.
+          Clicking the active tab collapses it; clicking another selects it. */}
+      <div className="flex items-stretch gap-px border-coffee-600 border-b bg-coffee-900">
+        {kinds.map((kind) => {
+          const isActive = kind === activeKind && !collapsed
+          return (
+            <button
+              type="button"
+              key={kind}
+              aria-pressed={isActive}
+              className={
+                isActive
+                  ? 'border-autumn-300 border-b-2 px-3 py-1.5 font-bold text-coffee-100 text-xs uppercase'
+                  : 'border-transparent border-b-2 px-3 py-1.5 text-coffee-300 text-xs uppercase hover:text-coffee-100'
+              }
+              onClick={() => {
+                if (kind === activeKind) {
+                  setCollapsed((value) => !value)
+                } else {
+                  setActiveTab(kind)
+                  setCollapsed(false)
                 }
-                onClick={() => {
-                  if (kind === activeKind) {
-                    setCollapsed((value) => !value)
-                  } else {
-                    setActiveTab(kind)
-                    setCollapsed(false)
-                  }
-                }}
-              >
-                {KIND_TITLE[kind]}
-              </button>
-            )
-          })}
-        </div>
-      )}
+              }}
+            >
+              {KIND_TITLE[kind]}
+            </button>
+          )
+        })}
+      </div>
 
       {activeKind && !collapsed && (
         <DiscoveryKind
@@ -390,11 +381,25 @@ function DiscoveryKind(props: {
         </div>
       </div>
 
+      {/* ADR-017 §2/§3: cached bundles are always loaded into context; selected
+          candidates are analysed lazily during the run. A run needs only one of
+          them, so Discover is enabled whenever the catalog is non-empty. */}
+      {showBundleSelection && (bundles.length > 0 || selectedCandidates.length > 0) && (
+        <p className="px-2 pt-1 text-coffee-400 text-[11px]">
+          {selected.length > 0 &&
+            `${selected.length} cached bundle${selected.length === 1 ? '' : 's'} loaded`}
+          {selected.length > 0 && selectedCandidates.length > 0 && ' · '}
+          {selectedCandidates.length > 0 &&
+            `${selectedCandidates.length} contract${selectedCandidates.length === 1 ? '' : 's'} analysed on demand`}
+        </p>
+      )}
       {/* ADR-013 §5 / ADR-016 §3: every cached bundle and unresolved candidate is
           visible and independently deselectable — no inner scrollbar. */}
       {showBundleSelection && <div className="border border-coffee-600">
         {bundles.length === 0 && candidates.length === 0 && !preparing ? (
-          <p className="p-2 text-coffee-400 text-xs italic">No {kind} bundles or candidates available.</p>
+          <p className="p-2 text-coffee-400 text-xs italic">
+            No {KIND_TITLE[kind].toLowerCase()} contracts found for this incident yet.
+          </p>
         ) : (
           <>
             {bundles.map((bundle) => {

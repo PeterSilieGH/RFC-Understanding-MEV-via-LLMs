@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
+  EXPLORER_API,
+  EXPLORER_WEB,
   anyArbitrageTxWithTip,
   anyRecentTxHash,
   anySandwichFrontrunTxHash,
@@ -64,7 +66,9 @@ test.describe("disco-web (cloned DiscoUI + trace panel)", () => {
     await expect(page.getByRole("option", { name: "trace" })).toHaveCount(0);
   });
 
-  test("research modes are opt-in and the panel is always named Discovery", async ({
+  // ADR-017 §1: both Discovery kinds are always available and there is no
+  // top-bar research toggle; opening Discovery loads the catalog (no model turn).
+  test("both Discovery kinds are always available with no research toggle", async ({
     page,
     request,
   }) => {
@@ -75,27 +79,34 @@ test.describe("disco-web (cloned DiscoUI + trace panel)", () => {
     expect(project).toBeTruthy();
 
     const preparations: string[] = [];
+    const discoveries: string[] = [];
     page.on("request", (req) => {
       if (req.url().includes("/api/agent/bundles/prepare")) preparations.push(req.url());
+      // The model run is POST /api/agent/discovery; the on-mount stored-session
+      // fetch (GET …/discovery/session) is not a model turn.
+      if (req.method() === "POST" && req.url().endsWith("/api/agent/discovery")) {
+        discoveries.push(req.url());
+      }
     });
     await page.goto(`${DISCO_WEB}/ui/p/${project}`);
 
-    await expect(page.getByRole("button", { name: "MEV Research" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-    await expect(page.getByRole("button", { name: "Vulnerability Research" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
+    // The top-bar research toggle is gone (ADR-017 §1).
+    await expect(page.getByRole("button", { name: "MEV Research" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Vulnerability Research" })).toHaveCount(0);
 
     const switcher = page.getByRole("combobox", { name: "Panel" }).nth(2);
     await switcher.click({ timeout: 20_000 });
     await page.getByRole("option", { name: "Discovery" }).click();
     await expect(switcher).toHaveText(/Discovery/);
-    await expect(page.getByText(/Select MEV Research or Vulnerability Research/)).toBeVisible();
-    await page.waitForTimeout(500);
-    expect(preparations).toHaveLength(0);
+
+    // Both kind tabs are always present without any toggle.
+    await expect(page.getByRole("button", { name: "MEV Discovery" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Vulnerability Discovery" })).toBeVisible();
+
+    // Opening Discovery loads the catalog (a bundles/prepare call) but performs
+    // no model turn (no /api/agent/discovery until Discover is pressed).
+    await expect.poll(() => preparations.length).toBeGreaterThan(0);
+    expect(discoveries).toHaveLength(0);
   });
 
   test("renders a live trace graph from the manual /ui/trace form", async ({ page }) => {
@@ -109,6 +120,40 @@ test.describe("disco-web (cloned DiscoUI + trace panel)", () => {
     // nodes are titled by contract (call types live in the color legend)
     await expect(page.getByText(/^0x[0-9a-f]{4}/).first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("delegatecall")).toBeVisible();
+  });
+});
+
+// ADR-017 §4: flagged incidents are written from DiscoUI through the disco-web
+// nginx `/api/flagged` proxy and surfaced in the Explorer "Flagged TXs" view.
+test.describe("flagged transactions (ADR-017)", () => {
+  const FAKE_TX = `0x${"ab".repeat(32)}`;
+
+  test.afterAll(async ({ request }) => {
+    await request.delete(`${EXPLORER_API}/api/flagged/${FAKE_TX}`).catch(() => {});
+  });
+
+  test("flag round-trips through the disco proxy and explorer-api store", async ({ request }) => {
+    // write through the disco-web origin (cross-origin hand-off via nginx)
+    const post = await request.post(`${DISCO_WEB}/api/flagged`, {
+      data: { txHash: FAKE_TX, label: "arbitrage", blockNumber: 123 },
+    });
+    expect(post.ok()).toBeTruthy();
+
+    // read back from explorer-api (the shared store)
+    const list = await (await request.get(`${EXPLORER_API}/api/flagged`)).json();
+    expect(list.flagged.some((f: { txHash: string }) => f.txHash === FAKE_TX)).toBeTruthy();
+
+    // remove; the row is gone (and nothing else is touched)
+    const del = await request.delete(`${EXPLORER_API}/api/flagged/${FAKE_TX}`);
+    expect(del.ok()).toBeTruthy();
+    const after = await (await request.get(`${EXPLORER_API}/api/flagged`)).json();
+    expect(after.flagged.some((f: { txHash: string }) => f.txHash === FAKE_TX)).toBeFalsy();
+  });
+
+  test("explorer-web exposes a Flagged TXs bottom-bar view", async ({ page }) => {
+    await page.goto(EXPLORER_WEB);
+    await page.getByRole("button", { name: "Flagged TXs" }).click();
+    await expect(page.getByText(/flagged from the DiscoUI trace workspace/i)).toBeVisible();
   });
 });
 

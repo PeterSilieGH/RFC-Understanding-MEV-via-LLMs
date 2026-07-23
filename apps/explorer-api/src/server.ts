@@ -14,6 +14,7 @@ import {
 } from "./backfill.js";
 import { getBlockBuilder, getBuilderStats } from "./builder.js";
 import { getEurPrices } from "./eurPrices.js";
+import { flagTx, listFlagged, unflagTx } from "./flagged.js";
 import { getAddressActivity, getLeaderboard, getPoolHeatmap, getTopSearchers } from "./insights.js";
 import { inspectBlockIfNeeded } from "./inspector.js";
 import { startInspectorLoop } from "./inspectorLoop.js";
@@ -59,6 +60,60 @@ app.get("/api/backfill", (_req, res) => {
 
 app.delete("/api/backfill", (_req, res) => {
   res.json(stopBackfill());
+});
+
+// ADR-017 §4: flagged incidents shared between DiscoUI and the Explorer.
+const TX_HASH_RE = /^0x[0-9a-f]{64}$/;
+
+app.get("/api/flagged", async (_req, res) => {
+  try {
+    res.json({ flagged: await listFlagged() });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/flagged", async (req, res) => {
+  const body = (req.body ?? {}) as {
+    txHash?: unknown;
+    project?: unknown;
+    blockNumber?: unknown;
+    label?: unknown;
+    note?: unknown;
+  };
+  const txHash = typeof body.txHash === "string" ? body.txHash.toLowerCase() : "";
+  if (!TX_HASH_RE.test(txHash)) {
+    res.status(400).json({ error: "a valid txHash is required" });
+    return;
+  }
+  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const blockNumber = Number.isFinite(Number(body.blockNumber)) ? Number(body.blockNumber) : null;
+  try {
+    const flagged = await flagTx({
+      txHash,
+      project: str(body.project),
+      blockNumber,
+      label: str(body.label),
+      note: str(body.note),
+    });
+    res.json({ flagged });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/flagged/:txHash", async (req, res) => {
+  const txHash = req.params.txHash.toLowerCase();
+  if (!TX_HASH_RE.test(txHash)) {
+    res.status(400).json({ error: "a valid txHash is required" });
+    return;
+  }
+  try {
+    await unflagTx(txHash);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 app.get("/api/analyzed-ranges", async (req, res) => {
