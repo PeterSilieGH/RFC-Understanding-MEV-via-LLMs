@@ -12,20 +12,26 @@ PR #4 have merged). No nginx/Express body-limit changes.
   `discoveryPrompt` snapshot; agent-api Biome clean; `apps/disco` is Biome-excluded
   and kept in its l2beat single-quote/no-semicolon style). Runtime/Playwright
   verification (below) is still pending a stack bring-up.
-- **Item 5 (interactive latency) — partially implemented.**
+- **Item 5 (interactive latency) — measured; two levers done, parallelism
+  dropped, pre-warm next.**
   - *Done:* **bounded eager surface** (`EAGER_CANDIDATE_CAP` in `DiscoveryPanes`)
-    — a cold run default-analyses only the top few unresolved candidates (catalog
-    order = relevance order); the rest stay visible/selectable. Cached bundles are
-    unaffected. This directly cuts child-turn count per run and is client-only /
-    reversible, so it is correct without a runtime measurement.
-  - *Blocked on the live stack (RPC tunnel):* **child parallelism** (the permit
-    model in `scheduler.ts` deliberately forbids concurrent children —
-    `ProviderPermit.runChild` throws on a nested hand-off — so this is an
-    architectural change that must be measured against the provider cap and the
-    connection-capped node), **evidence pre-warm** (must not use the no-RPC
-    prepare route; needs a separate opt-in path + the tunnel to warm anything),
-    and **incremental/preliminary verdict**. Each of these has a *runtime
-    before/after* acceptance and must be built with the stack up.
+    — a cold run default-analyses only the top few unresolved candidates; the rest
+    stay visible/selectable. Cached bundles are unaffected.
+  - *Done (found during measurement):* **evidence-resolution 502 fix**
+    (`decompiler.ts` `boundWarnings`) — an over-long Panoramix warning was failing
+    the artifact write and aborting **100% of child analyses** for unverified
+    contracts. Verified live: 3 failed children → 3 bundles.
+  - *Dropped as measured-unjustified:* **child parallelism**. Live measurement on
+    `0xa312a815…` (Qwen): serial children = 33s+13s+11s ≈ 68s, parent verdict
+    ≈ 63s, total ≈ 144s. Parallelism would save only ~25% of total while breaking
+    `scheduler.ts`'s deadlock-safe/provider-bounded permit invariant against an
+    unknown-concurrency provider. Not worth the risk (ADR-018 §5 measured outcome).
+  - *Next (still worth doing):* **evidence pre-warm** — resolve verified
+    source / codehash identity / bounded Panoramix for selected candidates in the
+    background when the catalog opens (a *separate* opt-in path, not the no-RPC
+    prepare route), moving the ~33s cold decompile off the run's critical path.
+    And a UI **"preparing workspace" vs "analyzing"** split. Both benefit from a
+    live before/after but neither needs the risky permit change.
 
 ## Outcome and invariants
 

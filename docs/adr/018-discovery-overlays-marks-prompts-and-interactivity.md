@@ -164,6 +164,27 @@ every category the builder can emit has a legend entry and vice-versa.
   output so re-opening an incident is instant.
 - Non-goal: changing the RPC node or the one-verdict-in-one-context model.
 
+**Measured outcome (2026-07-23, live stack, default Qwen model).** A real
+arbitrage incident (`0xa312a815…`) with three unverified contracts, driven end to
+end:
+- **A latent evidence bug dominated everything:** an over-long Panoramix warning
+  failed `putDecompilationArtifact`'s Zod validation with a 502, which aborted
+  **100% of child analyses** for unverified contracts. Fixing that (bounding
+  warnings) turned 3 failed children into 3 successful bundles — the single
+  biggest win, unrelated to concurrency.
+- **Serial-child cost, once children work:** 33s (cold Panoramix) + 13s + 11s =
+  ~68s wall, serial. The final parent verdict then took ~63s (18k tokens). Total
+  ~144s.
+- **Decision on parallelism:** child parallelism would cut only the ~68s child
+  phase toward ~33s (the slowest child) — a ~25% total saving — at the cost of
+  breaking `scheduler.ts`'s deadlock-safe, provider-bounded permit invariant
+  against a provider of unknown concurrency limits. **Not worth the risk.** The
+  measured high-value levers are instead: the evidence-bug fix (done), the
+  **bounded eager surface** (done — cap the child count), and **evidence
+  pre-warm** (moves the ~33s cold decompile off the critical path). The parent's
+  ~63s verdict generation is a prompt/effort-tuning concern, not a concurrency
+  one. `AGENT_CHILD_MAX_CONCURRENCY` is therefore **deferred as measured-unjustified**.
+
 ### 6. The initial Discovery context carries the trace tree *and* a signature index
 
 **Today.** `discoveryBase()` includes the structural **trace tree**, decoded
