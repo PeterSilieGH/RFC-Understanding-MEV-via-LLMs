@@ -2,11 +2,11 @@
 
 ## Status
 
-Proposed — 2026-07-23. A companion work package will track implementation
-(`docs/design/wp-discovery-polish.md`, to be written). Builds on ADR-016
+Proposed — 2026-07-23. Implementation is tracked by
+`docs/design/wp-discovery-polish.md`. Builds on ADR-016
 (shared evidence, lazy children, flow overlays) and ADR-017 (always-on kinds,
-flagged TXs, flow verification); both are on feature branches not yet merged, so
-this branch is stacked on `feat/adr-017-discovery-ux`.
+flagged TXs, flow verification); both have merged (PR #3, PR #4), so this branch
+is rebased onto `main`.
 
 ## Context
 
