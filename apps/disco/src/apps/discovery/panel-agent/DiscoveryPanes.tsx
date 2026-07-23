@@ -30,6 +30,7 @@ import {
 import { useAgentModelStore } from './model-store'
 import {
   buildGasContext,
+  buildSignatureIndexContext,
   buildSwapContext,
   buildTraceTreeContext,
 } from './traceTree'
@@ -248,8 +249,9 @@ function DiscoveryKind(props: {
       setSelectionOpen(false)
       let succeeded = true
       try {
-        const [traceTree, swaps, gas] = await Promise.all([
+        const [traceTree, signatures, swaps, gas] = await Promise.all([
           buildTraceTreeContext(txHash),
+          buildSignatureIndexContext(txHash),
           buildSwapContext(txHash),
           buildGasContext(txHash),
         ])
@@ -263,6 +265,7 @@ function DiscoveryKind(props: {
             catalogFingerprint: catalogFingerprint ?? undefined,
             question: followup,
             traceTree,
+            signatures,
             swaps,
             gas,
             model,

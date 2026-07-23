@@ -72,6 +72,73 @@ export async function buildTraceTreeContext(
   return sections.join('\n\n')
 }
 
+/** Bounds so a pathological incident can't blow the prompt budget. */
+const MAX_INDEX_CONTRACTS = 40
+const MAX_SIGS_PER_CONTRACT = 24
+
+/**
+ * DIVERGENCE(mev): ADR-018 §6. A compact, bounded function-signature index for
+ * the incident's participating contracts — the callable surface actually
+ * exercised, grouped per contract (distinct from the sequential trace tree).
+ * Selectors are named from the discovery output; unknown ones show their raw
+ * 4-byte. Grounds the parent's first turn without spending a child turn. Returns
+ * '' off a trace route or when nothing decodes.
+ */
+export async function buildSignatureIndexContext(
+  txHash: string | undefined,
+): Promise<string> {
+  if (!txHash) return ''
+  let workspace: Awaited<ReturnType<typeof getTraceWorkspace>>
+  try {
+    workspace = await getTraceWorkspace(txHash)
+  } catch {
+    return ''
+  }
+  const contracts = workspace.contracts ?? {}
+  const selectors = workspace.selectors ?? {}
+  const legs =
+    workspace.legs.length > 0
+      ? workspace.legs
+      : [{ txHash, role: 'root' as const, viaType: null }]
+
+  // address -> ordered set of selectors invoked on it across all legs
+  const byContract = new Map<string, Set<string>>()
+  for (const leg of legs) {
+    let graph: Awaited<ReturnType<typeof getTraceGraph>>
+    try {
+      graph = await getTraceGraph(leg.txHash)
+    } catch {
+      continue
+    }
+    for (const node of graph.nodes) {
+      if (!node.to || !node.selector) continue
+      const key = node.to.toLowerCase()
+      let set = byContract.get(key)
+      if (!set) {
+        set = new Set()
+        byContract.set(key, set)
+      }
+      set.add(node.selector.toLowerCase())
+    }
+  }
+  if (byContract.size === 0) return ''
+
+  const nameFor = (address: string): string =>
+    contracts[address.toLowerCase()]?.name ?? short(address)
+  const fnFor = (selector: string): string => selectors[selector] ?? selector
+
+  const lines: string[] = []
+  for (const [address, sigs] of [...byContract].slice(0, MAX_INDEX_CONTRACTS)) {
+    const names = [...sigs].slice(0, MAX_SIGS_PER_CONTRACT).map(fnFor)
+    const extra = sigs.size > MAX_SIGS_PER_CONTRACT ? `, …(+${sigs.size - MAX_SIGS_PER_CONTRACT})` : ''
+    lines.push(`- ${nameFor(address)} (${address}): ${names.join(', ')}${extra}`)
+  }
+  if (byContract.size > MAX_INDEX_CONTRACTS) {
+    lines.push(`- …(${byContract.size - MAX_INDEX_CONTRACTS} more contracts omitted)`)
+  }
+  return lines.join('\n')
+}
+
 function fmtEth(wei: bigint): string {
   // 6-dp fixed ETH from wei, without floating-point drift.
   const neg = wei < 0n
