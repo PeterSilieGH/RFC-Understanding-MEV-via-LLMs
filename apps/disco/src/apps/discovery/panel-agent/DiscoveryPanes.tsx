@@ -30,6 +30,7 @@ import {
 import { useAgentModelStore } from './model-store'
 import {
   buildGasContext,
+  buildSignatureIndexContext,
   buildSwapContext,
   buildTraceTreeContext,
 } from './traceTree'
@@ -43,6 +44,13 @@ const KIND_TITLE: Record<ResearchKind, string> = {
 // ADR-017 §1: both Discovery kinds are always available; there is no top-bar
 // research toggle. Stable module-level array so the preparation key is stable.
 const ALL_KINDS: ResearchKind[] = ['mev', 'vuln']
+
+// ADR-018 §5: bound the eager analysis surface. Cached bundles are free to load,
+// but each unresolved candidate costs a lazy child model turn, and analysing a
+// dozen of them serialises a cold run into minutes. Default to analysing only the
+// most trace-relevant few (catalog order is relevance order); the rest stay
+// visible and selectable, so the user can opt into more.
+const EAGER_CANDIDATE_CAP = 5
 
 export function DiscoveryPanes(props: { project: string }) {
   const { project } = props
@@ -131,19 +139,25 @@ export function DiscoveryPanes(props: { project: string }) {
         })}
       </div>
 
-      {activeKind && !collapsed && (
+      {/* ADR-018 §7: both kind panes stay mounted and toggle visibility, so an
+          in-flight run (its live stream, reasoning, and abort handle live in
+          component state) survives a tab switch or collapse instead of being
+          unmounted and orphaned. Keying by kind (not activeKind) prevents the
+          remount; nothing here calls abort() on switch. */}
+      {kinds.map((kind) => (
         <DiscoveryKind
-          key={activeKind}
+          key={kind}
+          hidden={kind !== activeKind || collapsed}
           project={project}
           incident={txHash ?? project}
           txHash={txHash}
-          kind={activeKind}
-          bundles={bundles.filter((bundle) => bundle.kind === activeKind)}
-          candidates={candidates.filter((candidate) => candidate.kind === activeKind)}
+          kind={kind}
+          bundles={bundles.filter((bundle) => bundle.kind === kind)}
+          candidates={candidates.filter((candidate) => candidate.kind === kind)}
           catalogFingerprint={fingerprint}
           preparing={preparing}
         />
-      )}
+      ))}
     </div>
   )
 }
@@ -167,6 +181,8 @@ function DiscoveryKind(props: {
   candidates: PreparedCandidate[]
   catalogFingerprint: string | null
   preparing: boolean
+  // ADR-018 §7: hidden panes stay mounted so their in-flight run keeps streaming.
+  hidden: boolean
 }) {
   const { project, incident, txHash, kind, bundles, candidates, catalogFingerprint, preparing } =
     props
@@ -198,6 +214,19 @@ function DiscoveryKind(props: {
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | undefined>(undefined)
   const conversationRef = useRef<HTMLDivElement | null>(null)
+
+  // ADR-018 §5: until the user touches the selection, default-exclude unresolved
+  // candidates beyond the eager cap so a cold run analyses only the top few.
+  // Cached bundles (`bundles`) are unaffected — they cost no child turn.
+  useEffect(() => {
+    if (selectionDirty) return
+    const overflow = candidates.slice(EAGER_CANDIDATE_CAP).map((candidate) => candidate.id)
+    setExcludedCandidates((current) =>
+      current.length === overflow.length && current.every((id, i) => id === overflow[i])
+        ? current
+        : overflow,
+    )
+  }, [candidates, selectionDirty])
 
   const selected = bundles.filter((bundle) => !excluded.includes(bundle.codehash))
   const selectedCandidates = candidates.filter(
@@ -240,8 +269,9 @@ function DiscoveryKind(props: {
       setSelectionOpen(false)
       let succeeded = true
       try {
-        const [traceTree, swaps, gas] = await Promise.all([
+        const [traceTree, signatures, swaps, gas] = await Promise.all([
           buildTraceTreeContext(txHash),
+          buildSignatureIndexContext(txHash),
           buildSwapContext(txHash),
           buildGasContext(txHash),
         ])
@@ -255,6 +285,7 @@ function DiscoveryKind(props: {
             catalogFingerprint: catalogFingerprint ?? undefined,
             question: followup,
             traceTree,
+            signatures,
             swaps,
             gas,
             model,
@@ -351,7 +382,9 @@ function DiscoveryKind(props: {
   }, [turns.length, pendingQuestion, live, reasoning])
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-2 p-2">
+    <section
+      className={`flex min-h-0 flex-1 flex-col gap-2 p-2${props.hidden ? ' hidden' : ''}`}
+    >
       <div className="flex items-center justify-end">
         <Button
           size="small"

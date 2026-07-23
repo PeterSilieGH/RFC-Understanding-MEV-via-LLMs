@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useParams } from 'react-router-dom'
-import { useAgentMarksStore } from '../../panel-agent/store'
+import { bundleCoverage, useAgentMarksStore } from '../../panel-agent/store'
+import { useFlowOverlaySelection } from '../flow-overlay/FlowOverlayContext'
 import { useGlobalSettingsStore } from '../../store/global-settings-store'
 import type { Node } from '../store/State'
 import { useStore } from '../store/store'
@@ -46,14 +47,16 @@ export function NodesAndConnections() {
   const projectMarks = useAgentMarksStore((s) =>
     project ? s.byProject[project] : undefined,
   )
-  const marks = useMemo(
-    () => ({
-      code: new Set(projectMarks?.code ?? []),
-      value: new Set(projectMarks?.value ?? []),
+  // ADR-018 §2: M/V ticks derive from per-kind bundle coverage, not the ADR-009
+  // analyze code/value sets.
+  const marks = useMemo(() => {
+    const coverage = bundleCoverage(projectMarks?.bundles)
+    return {
+      mev: coverage.mev,
+      vuln: coverage.vuln,
       important: new Set(projectMarks?.important ?? []),
-    }),
-    [projectMarks],
-  )
+    }
+  }, [projectMarks])
 
   const view = useMemo<DerivedView>(
     () =>
@@ -75,8 +78,12 @@ export function NodesAndConnections() {
     ],
   )
 
+  // ADR-018 §1: the structural connection layer is the "Default" edge mode. When
+  // a semantic overlay (Control/Funds) is active it replaces this layer, so the
+  // three modes are mutually exclusive rather than stacked.
+  const { mode } = useFlowOverlaySelection()
   const bounds = view.bounds
-  const svg = bounds && (
+  const svg = bounds && mode === 'default' && (
     <svg
       viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`}
       className="pointer-events-none absolute"
@@ -110,8 +117,8 @@ export function NodesAndConnections() {
             isOverlapping={flags.isOverlapping}
             fieldHighlightedMask={flags.fieldHighlightedMask}
             fieldTargetHiddenMask={flags.fieldTargetHiddenMask}
-            hasCodeMark={marks.code.has(addr)}
-            hasValueMark={marks.value.has(addr)}
+            hasMevMark={marks.mev.has(addr)}
+            hasVulnMark={marks.vuln.has(addr)}
             isImportant={marks.important.has(addr)}
           />
         )

@@ -1,8 +1,5 @@
 import { request as httpRequest } from "node:http";
-import {
-  type DecompilationResponse,
-  PANORAMIX_ENGINE,
-} from "@mev/decompiler-api";
+import { type DecompilationResponse, PANORAMIX_ENGINE } from "@mev/decompiler-api";
 import {
   type CodeArtifact,
   type DecompilationArtifact,
@@ -120,9 +117,7 @@ export class UnixDecompilerClient implements DecompilerTransport {
             }
             chunks.push(chunk);
           });
-          response.on("end", () =>
-            finish(() => resolve(Buffer.concat(chunks).toString("utf8"))),
-          );
+          response.on("end", () => finish(() => resolve(Buffer.concat(chunks).toString("utf8"))));
         },
       );
       const timer = setTimeout(() => {
@@ -258,7 +253,10 @@ async function storeResponse(
         retryAfter: new Date(now.getTime() + 15 * 60_000).toISOString(),
         attemptCount,
         durationMs: response.durationMs,
-        warnings: [...response.warnings, "decompiler returned no usable structured output"],
+        warnings: boundWarnings([
+          ...response.warnings,
+          "decompiler returned no usable structured output",
+        ]),
       });
       return { artifact, pseudocode: null };
     }
@@ -271,10 +269,10 @@ async function storeResponse(
       failedFunctions: response.problems.map(
         (problem) => problem.name ?? problem.selector ?? "unknown",
       ),
-      warnings: [
+      warnings: boundWarnings([
         ...response.warnings,
         ...response.problems.map((problem) => problem.message),
-      ],
+      ]),
       durationMs: response.durationMs,
       attemptCount,
     });
@@ -291,11 +289,11 @@ async function storeResponse(
     failedFunctions: response.problems.map(
       (problem) => problem.name ?? problem.selector ?? "unknown",
     ),
-    warnings: [
+    warnings: boundWarnings([
       ...response.warnings,
       ...response.problems.map((problem) => problem.message),
       ...(response.error ? [response.error.message] : []),
-    ],
+    ]),
   });
   return { artifact, pseudocode: null };
 }
@@ -355,4 +353,17 @@ function transportErrorClass(error: unknown): string {
 function boundedMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.slice(0, 2_048);
+}
+
+// Panoramix problem/error messages can exceed the evidence schema's per-warning
+// cap. An oversized (or too-numerous) warning list previously failed the whole
+// artifact write with a Zod 502, which aborted every child contract-analysis for
+// the affected contract. Bound to the *tighter* of the two consumers — the
+// packages/evidence store (≤2048 chars) and agent-api's analysisEvidence
+// (≤2000 chars, ≤64 entries) — so a long diagnostic degrades to a truncated note
+// instead of breaking evidence resolution.
+const MAX_WARNINGS = 64;
+const MAX_WARNING_CHARS = 2_000;
+function boundWarnings(warnings: readonly string[]): string[] {
+  return warnings.slice(0, MAX_WARNINGS).map((warning) => warning.slice(0, MAX_WARNING_CHARS));
 }

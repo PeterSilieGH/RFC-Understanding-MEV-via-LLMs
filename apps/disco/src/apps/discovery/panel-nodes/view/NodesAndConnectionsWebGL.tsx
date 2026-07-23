@@ -4,6 +4,7 @@ import type { ApiAddressType } from '../../../../api/types'
 import { ADDRESS_ICON_COMPONENTS } from '../../../../components/AddressIcon'
 import { IconInitial } from '../../../../icons/IconInitial'
 import { useGlobalSettingsStore } from '../../store/global-settings-store'
+import { flowColorRgba } from '../flow-overlay/flowColors'
 import { useFlowGeometry } from '../flow-overlay/FlowOverlayView'
 import type { FlowVisualEdge } from '../flow-overlay/geometry'
 import type { Node } from '../store/State'
@@ -95,6 +96,9 @@ interface DrawData {
   markUnreachableEntries: boolean
   anyNodeSelected: boolean
   flowGeometry: readonly FlowVisualEdge[]
+  // ADR-018 §1: draw the structural connection layer only in Default mode; an
+  // active Control/Funds overlay replaces it (exclusive edge modes).
+  showStructural: boolean
 }
 
 interface VisibleField {
@@ -914,7 +918,11 @@ class WebGLRenderer {
     this.counts.headerText = this.buildHeaderText(renderNodes)
     this.counts.fieldText = this.buildFieldText(renderNodes)
     this.counts.footerText = this.buildFooterText(renderNodes)
-    this.counts.connections = this.buildConnections(renderNodes, data)
+    // ADR-018 §1: Default mode draws structural connections; an active
+    // Control/Funds overlay replaces them (exclusive edge modes).
+    this.counts.connections = data.showStructural
+      ? this.buildConnections(renderNodes, data)
+      : 0
     this.counts.flows = this.buildFlows(data.flowGeometry)
     this.counts.overlap = this.buildOverlap(renderNodes)
   }
@@ -1379,12 +1387,11 @@ class WebGLRenderer {
     const buf = this.ensureLine(maxVertices)
     let v = 0
     for (const visual of edges) {
-      const color: RGBA =
-        visual.edge.status === 'attempted'
-          ? AUX_RED
-          : visual.edge.layer === 'control'
-            ? [0x38 / 255, 0xbd / 255, 0xf8 / 255, 1]
-            : AUX_ORANGE
+      // ADR-018 §1: shared overlay palette — control blue, funds green,
+      // attempted/reverted red — matching the DOM renderer and legend.
+      const color: RGBA = flowColorRgba(
+        visual.edge.status === 'attempted' ? 'attempted' : visual.edge.layer,
+      )
       v += emitFlowStroke(
         buf,
         v,
@@ -2248,6 +2255,7 @@ function buildDrawData(
   highlightOverlapping: boolean,
   markUnreachableEntries: boolean,
   flowGeometry: readonly FlowVisualEdge[],
+  showStructural: boolean,
 ): DrawData {
   const hiddenSet = new Set(hidden)
   const selectedSet = new Set(selected)
@@ -2315,6 +2323,7 @@ function buildDrawData(
     markUnreachableEntries,
     anyNodeSelected,
     flowGeometry,
+    showStructural,
   }
 }
 
@@ -2371,7 +2380,8 @@ export function NodesAndConnectionsWebGL() {
   const markUnreachableEntries = useGlobalSettingsStore(
     (s) => s.markUnreachableEntries,
   )
-  const { geometry: flowGeometry } = useFlowGeometry()
+  const { geometry: flowGeometry, mode } = useFlowGeometry()
+  const showStructural = mode === 'default'
 
   const data = useMemo(
     () =>
@@ -2383,6 +2393,7 @@ export function NodesAndConnectionsWebGL() {
         highlightOverlapping,
         markUnreachableEntries,
         flowGeometry,
+        showStructural,
       ),
     [
       nodes,
@@ -2392,6 +2403,7 @@ export function NodesAndConnectionsWebGL() {
       highlightOverlapping,
       markUnreachableEntries,
       flowGeometry,
+      showStructural,
     ],
   )
   dataRef.current = data

@@ -15,6 +15,7 @@ import {
   loadCandidateCatalog,
 } from "./candidateCatalog.js";
 import { buildContractAnalysisConfig } from "./contractAnalysis.js";
+import { DISCOVERY_PROMPTS, DISCOVERY_PROMPT_VERSION, discoveryBase } from "./discoveryPrompt.js";
 import { listModels } from "./models.js";
 import { type RunEvent, type ThinkingLevel, runAnalysis } from "./runner.js";
 import { formatSignatureList, parseFunctionSignatures } from "./signatures.js";
@@ -249,47 +250,8 @@ app.post("/api/agent/values/enrich", async (req, res) => {
   }
 });
 
-// ADR-013 §8: each prompt invites the read-only foundry `cast` tool for facts
-// the bundles/evidence lack, with the standard citation requirement.
-const CAST_HINT =
-  "You may call the read-only `cast` tool to retrieve on-chain facts the supplied bundles/evidence do not contain (storage slots, balances, eth_call results, code, token metadata); cite anything you use.";
-const DISCOVERY_PROMPTS: Record<ResearchKind, string> = {
-  mev: `You are conducting grounded MEV research. Explain ordering, value flow, extraction mechanism, affected parties, uncertainty, and supporting contract evidence. Do not provide an executable extraction bot. ${CAST_HINT}`,
-  vuln: `You are conducting grounded smart-contract vulnerability research. Explain trust boundaries, reachable failure modes, impact, prerequisites, uncertainty, and supporting contract evidence. Do not claim an exploit without evidence. ${CAST_HINT}`,
-};
-
-function discoveryBase(
-  kind: ResearchKind,
-  bundles: ContractBundle[],
-  traceTree: string,
-  swaps: string,
-  gas: string,
-  unresolved: ContractCandidate[],
-): string {
-  return [
-    DISCOVERY_PROMPTS[kind],
-    "Use only the supplied bundles and incident evidence. Cite bundle addresses and entry points.",
-    "",
-    "Selected reusable contract bundles:",
-    ...bundles.map((bundle, i) => `\n=== Bundle ${i + 1} ===\n${bundleText(bundle)}`),
-    // ADR-016 §3: unresolved candidates are analyzed lazily. Give the model the
-    // opaque ids it may pass to request_contract_analysis, but no addresses/code
-    // it could use to fabricate a request outside the authorized selection.
-    ...(unresolved.length > 0
-      ? [
-          "",
-          "Unresolved selected candidates (call request_contract_analysis with the candidateId to analyze one, only if it materially affects the verdict):",
-          ...unresolved.map(
-            (candidate) =>
-              `- candidateId=${candidate.id} · ${candidate.name ?? "unnamed"} (${candidate.address}) · evidence=${candidate.sourceStatus}${candidate.traceRelevance ? ` · ${candidate.traceRelevance}` : ""}`,
-          ),
-        ]
-      : []),
-    ...(traceTree ? ["", "Structural trace tree:", traceTree] : []),
-    ...(swaps ? ["", "Decoded swaps:", swaps] : []),
-    ...(gas ? ["", "Incident economics (gas & builder tip):", gas] : []),
-  ].join("\n");
-}
+// ADR-018 §3/§6: Discovery prompts + evidence base live in ./discoveryPrompt.ts
+// (extracted so they can be unit-tested without booting the server).
 
 // Persistent, kind-parameterized Discovery verdict/chat. Durable turns rehydrate
 // after restart; a live pi session is reused while its model + bundle fingerprint
@@ -304,6 +266,7 @@ app.post("/api/agent/discovery", async (req, res) => {
     catalogFingerprint?: string;
     question?: string;
     traceTree?: string;
+    signatures?: string;
     swaps?: string;
     gas?: string;
     effort?: unknown;
@@ -364,9 +327,9 @@ app.post("/api/agent/discovery", async (req, res) => {
   const analyzeModel = pickModel(body.analyzeModel) ?? model;
   const analyzeEffort = pickEffort(body.analyzeEffort) ?? effort;
   const base = discoveryBase(
-    kind,
     bundles,
     body.traceTree?.trim() ?? "",
+    body.signatures?.trim() ?? "",
     body.swaps?.trim() ?? "",
     body.gas?.trim() ?? "",
     unresolved,
@@ -396,6 +359,9 @@ app.post("/api/agent/discovery", async (req, res) => {
         bundles: bundles.map((b) => [b.codehash, b.updatedAt]),
         candidates: [...unresolved.map((c) => c.id)].sort(),
         catalog: catalogFingerprint ?? null,
+        // ADR-018 §3: a prompt-version bump starts a fresh session so a stale
+        // system prompt is never reused across a deploy.
+        promptVersion: DISCOVERY_PROMPT_VERSION,
       }),
     )
     .digest("hex");
@@ -461,7 +427,12 @@ app.post("/api/agent/discovery", async (req, res) => {
           `Candidates: ${unresolved.length}`,
         ],
         model,
-        systemPromptSuffix: DISCOVERY_PROMPTS[kind],
+        // ADR-018 §3: MEV appends its framing to the shared MEV SYSTEM.md;
+        // vulnerability Discovery uses a security-first profile that does not
+        // inherit it (systemPromptOverride).
+        ...(kind === "vuln"
+          ? { systemPromptOverride: DISCOVERY_PROMPTS.vuln }
+          : { systemPromptSuffix: DISCOVERY_PROMPTS.mev }),
         // ADR-013 §6/§8: stream reasoning and offer the read-only cast tool.
         thinkingLevel: effort,
         enableCast: true,

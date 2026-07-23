@@ -223,6 +223,8 @@ export function streamDiscovery(
     candidateIds?: string[]
     question?: string
     traceTree?: string
+    /** bounded per-contract function-signature index (ADR-018 §6) */
+    signatures?: string
     swaps?: string
     /** incident gas fee + builder tip context (ADR-013 §7) */
     gas?: string
