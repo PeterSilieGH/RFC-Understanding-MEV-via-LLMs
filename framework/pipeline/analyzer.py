@@ -1,54 +1,81 @@
-from typing import List, Dict
-from framework.data_types import TraceEvent, CallNode
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional
+
+@dataclass
+class TraceEvent:
+    """Represents a single event in the execution trace of a smart contract call."""
+    from_address: str # the address that initiates this sub-call
+    to_address: str # the destination address that receives this sub-call
+    method: str # the specific function that is called in this sub-call, corresponds to first 4 bytes of the call data
+    value: int
+    call_type: str # EVM opcode used to make the call (e.g., CALL, DELEGATECALL, etc.)
+    
+class CallNode:
+    def __init__(self, trace_dict):
+        self.from_addr = trace_dict['from']
+        self.to_addr = trace_dict['to']
+        self.method = trace_dict['method']
+        self.call_type = trace_dict['type']
+        self.children = []
+
+    def to_dict(self):
+        return {
+            "from": self.from_addr,
+            "to": self.to_addr,
+            "method": self.method,
+            "type": self.call_type,
+            "children": [c.to_dict() for c in self.children]
+        }
 
 class Analyzer:
-    def reconstruct_call_tree(self, flat_traces):
+    def reconstruct_call_tree(self, flat_traces: List[Any]) -> List[CallNode]:
         """
-        Implementation of TraceLLM Algorithm 1: 
-        Reconstruction of call trees from flat EVM traces.
+        Reconstructs the hierarchical call tree from a flat list of trace events.
         """
         if not flat_traces:
             return []
-
-        calls = [CallNode(t) for t in flat_traces]
-        forest = []
+            
+        trees = []
         stack = []
-
-        for i, call in enumerate(calls):
-            # Rule 1: New root if stack empty or caller doesn't match previous callee
-            if i == 0 or (stack and call.from_addr != calls[i-1].to_addr):
-                forest.append(call)
-                stack = [call]
+        
+        for trace in flat_traces:
+            node = CallNode(trace)
+            
+            if not stack:
+                trees.append(node)
+                stack.append(node)
             else:
-                # Pop stack until we find the parent where parent.to == call.from
-                while stack and call.from_addr != stack[-1].to_addr:
+                while stack and stack[-1].to_addr != node.from_addr:
                     stack.pop()
-                
+                    
                 if stack:
                     parent = stack[-1]
-                    parent.children.append(call)
-                    stack.append(call)
+                    parent.children.append(node)
+                    stack.append(node)
                 else:
-                    # Fallback for orphaned traces
-                    forest.append(call)
-                    stack.append(call)
+                    trees.append(node)
+                    stack.append(node)
                     
-        return forest
+        return trees
 
-    def extract_execution_paths(self, tree_nodes):
-        """Extracts root-to-leaf paths for feature extraction & LLM prompting."""
-        all_paths = []
+    def extract_execution_paths(self, call_tree: List[CallNode]) -> List[List[CallNode]]:
+        """
+        Extracts all root-to-leaf paths using Depth First Search (DFS).
+        """
+        paths = []
         
-        def dfs(node, current_path):
-            current_path.append(f"{node.to_addr[:8]}::{node.method}")
+        def dfs(node: CallNode, current_path: List[CallNode]):
+            current_path.append(node)
+            
             if not node.children:
-                all_paths.append(list(current_path))
+                paths.append(list(current_path))
             else:
                 for child in node.children:
                     dfs(child, current_path)
+                    
             current_path.pop()
 
-        for root in tree_nodes:
+        for root in call_tree:
             dfs(root, [])
             
-        return all_paths
+        return paths
