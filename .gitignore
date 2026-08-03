@@ -1,3 +1,7 @@
+# Private Agent configs
+
+.claude
+
 # Dependencies
 node_modules/
 
